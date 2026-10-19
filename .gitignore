@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.tanstack/
+*.tsbuildinfo
+*.log
+.DS_Store/
+
+# Secrets & local env (never commit). Covers .env at any level
+# (root .env, apps/platform/.env) plus Vite local overrides.
+.env
+.env.local
+.env.*.local
+
+# Prisma client is generated (pnpm db:generate / Docker build)
+apps/api/src/generated/
+
+# Conversion artifacts written at runtime (later: object storage)
+apps/api/data/

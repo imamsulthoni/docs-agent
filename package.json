@@ -1,0 +1,33 @@
+{
+  "name": "docs-agent",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:platform": "pnpm --filter @docs-agent/platform dev",
+    "build:platform": "pnpm --filter @docs-agent/platform build",
+    "build:agent": "pnpm --filter @docs-agent/agent build",
+    "dev:api": "pnpm --filter @docs-agent/api dev",
+    "dev": "pnpm --parallel --filter @docs-agent/api --filter @docs-agent/platform run dev",
+    "build:api": "pnpm --filter @docs-agent/api build",
+    "dev:worker": "pnpm --filter @docs-agent/api worker",
+    "db:generate": "pnpm --filter @docs-agent/api db:generate",
+    "db:migrate": "pnpm --filter @docs-agent/api db:migrate",
+    "db:studio": "pnpm --filter @docs-agent/api db:studio",
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "test": "pnpm --filter @docs-agent/api test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "dotenv-cli": "^11.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "onnxruntime-node": "1.23.2",
+      "onnxruntime-common": "1.23.2"
+    }
+  }
+}

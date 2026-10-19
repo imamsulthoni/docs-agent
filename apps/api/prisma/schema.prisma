@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// RAG documents indexed from md-conversion-service-py markdown.
+// id reuses the converter doc_id (32 hex chars) so the gateway can
+// correlate converter artifacts, DB rows and Qdrant points.
+// A user-owned container of persistent documents. Guests never have one.
+// Deleting a workspace is done through the service (docs first), hence
+// Document.workspace uses onDelete: Restrict — a bare DB delete would fail.
+model Workspace {
+  id        String     @id @default(cuid())
+  ownerId   String
+  name      String
+  createdAt DateTime   @default(now())
+  documents Document[]
+
+  @@index([ownerId])
+}
+
+model Document {
+  id          String         @id
+  name        String
+  markdownUrl String?
+  stats       Json?
+  summary     String?
+  isProcessed Boolean        @default(false)
+  // Ownership. Null for guest docs (anonymous fp: uploads, still expiring).
+  // Persistent docs are those with workspaceId set (see artifacts.putArtifact).
+  ownerId     String?
+  workspaceId String?
+  workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  createdAt   DateTime       @default(now())
+  pages       DocumentPage[]
+
+  @@index([ownerId])
+  @@index([workspaceId])
+}
+
+model DocumentPage {
+  id         String   @id @default(cuid())
+  pageNumber Int
+  content    String
+  metadata   Json
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, pageNumber])
+  @@index([documentId])
+}
+
+// Anvia memory-prisma (v1, Prisma 7 conventional client).
+// sessionId = doc:<docId>:s:<uuid>, userId = fp:<browser fingerprint>.
+model AgentMemorySession {
+  id        String   @id @default(cuid())
+  scopeKey  String   @unique
+  sessionId String
+  userId    String?
+  metadata  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages AgentMemoryMessage[]
+  errors   AgentMemoryError[]
+
+  @@index([sessionId, userId])
+}
+
+model AgentMemoryMessage {
+  id              String             @id @default(cuid())
+  memorySessionId String
+  memorySession   AgentMemorySession @relation(fields: [memorySessionId], references: [id], onDelete: Cascade)
+  runId           String
+  turn            Int
+  position        Int
+  role            String
+  message         Json
+  createdAt       DateTime           @default(now())
+
+  @@unique([memorySessionId, position])
+  @@index([runId])
+}
+
+model AgentMemoryError {
+  id              String             @id @default(cuid())
+  memorySessionId String
+  memorySession   AgentMemorySession @relation(fields: [memorySessionId], references: [id], onDelete: Cascade)
+  runId           String
+  error           Json
+  messages        Json
+  createdAt       DateTime           @default(now())
+
+  @@index([runId])
+}
+
+// Cross-workspace mentions attached to one user turn. `docId` has no FK on
+// purpose: the name is a snapshot so history can still render a "deleted
+// document" chip after the document (and its row) is gone.
+model ChatMessageMention {
+  id           String   @id @default(cuid())
+  sessionId    String
+  runId        String
+  turn         Int
+  docId        String
+  workspaceId  String?
+  documentName String
+  createdAt    DateTime @default(now())
+
+  @@unique([sessionId, runId, docId])
+  @@index([sessionId])
+  @@index([docId])
+}
+
+// File attachment uploaded into one chat turn. Only its processed text
+// (PDF/markdown, image OCR, TXT) is stored — never indexed as a Document
+// (BRD §12.13). `docId`/`sessionId` have no FK on purpose: the rows are
+// snapshot metadata kept so history chips keep rendering, mirroring
+// ChatMessageMention. `messageRef` (a runId) is written when a sent
+// message uses the attachment; deleting soft-deletes for the same reason.
+model ChatAttachment {
+  id         String   @id @default(cuid())
+  ownerId    String
+  docId      String
+  sessionId  String   @default("")
+  messageRef String?
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  status     String   @default("processing") // processing | ready | failed | deleted
+  truncated  Boolean  @default(false)
+  markdown   String?  @db.Text
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([ownerId, sessionId])
+  @@index([sessionId])
+}
+
+// Better Auth (v1.7.x) core tables. Model names are PascalCase but the
+// Prisma adapter addresses them by lowercased first letter (`prisma.user`),
+// which matches the adapter's default model names. Field set matches
+// @better-auth/core getAuthTables so its runtime schema check passes.
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
