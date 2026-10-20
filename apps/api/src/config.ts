@@ -74,6 +74,33 @@ export const ATTACH_OCR_TIMEOUT_MS = Number(
 export const ATTACH_MAX_CHARS = Number(env("ATTACH_MAX_CHARS", "50000"));
 /** `processing` rows older than this report failed on the next poll. */
 export const ATTACH_STALE_MS = Number(env("ATTACH_STALE_MS", "900000"));
+/** Prompt budget for attachments sent with the current turn (per file/total). */
+export const ATTACH_INJECT_MAX_CHARS = Number(
+  env("ATTACH_INJECT_MAX_CHARS", "50000"),
+);
+export const ATTACH_TOTAL_MAX_CHARS = Number(
+  env("ATTACH_TOTAL_MAX_CHARS", "60000"),
+);
+/** Tighter budgets when earlier-turn attachments are re-injected for follow-ups. */
+export const ATTACH_FOLLOWUP_MAX_CHARS = Number(
+  env("ATTACH_FOLLOWUP_MAX_CHARS", "12000"),
+);
+export const ATTACH_FOLLOWUP_TOTAL_MAX_CHARS = Number(
+  env("ATTACH_FOLLOWUP_TOTAL_MAX_CHARS", "30000"),
+);
+/** Keyword search over the session's ready attachments (no vector index). */
+export const ATTACH_SEARCH_TOP_K = Number(env("ATTACH_SEARCH_TOP_K", "3"));
+export const ATTACH_SEARCH_SNIPPET_CHARS = Number(
+  env("ATTACH_SEARCH_SNIPPET_CHARS", "1200"),
+);
+/** Max session rows listed for name matching/catalog. */
+export const ATTACH_SEARCH_MAX_ROWS = Number(
+  env("ATTACH_SEARCH_MAX_ROWS", "50"),
+);
+/** Max rows whose full markdown is loaded to score a keyword query. */
+export const ATTACH_SEARCH_CANDIDATES = Number(
+  env("ATTACH_SEARCH_CANDIDATES", "10"),
+);
 /** Retrieved pages per document: the active doc gets more room than mentions. */
 export const RETRIEVAL_TOP_K_ACTIVE = Number(env("RETRIEVAL_TOP_K_ACTIVE", "4"));
 export const RETRIEVAL_TOP_K_MENTION = Number(

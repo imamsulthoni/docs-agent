@@ -8,6 +8,7 @@ import type {
 import type { PrismaMemoryStore } from "@anvia/memory-prisma";
 import { prisma } from "../../utils/prisma.js";
 import { linkAttachmentsToRun } from "./attachments/service.js";
+import { purgeSessionChips } from "./session-purge.js";
 
 const QUESTION_RE = /<question>([\s\S]*?)<\/question>/;
 
@@ -157,13 +158,10 @@ export class LeanHistoryStore implements MemoryStore {
 
   async clear(options: MemoryClearOptions): Promise<void> {
     await this.inner.clear(options);
-    try {
-      const sessionId = options.scope.sessionId;
-      // A cleared session keeps no chips: mentions and attachments go with it.
-      await prisma.chatMessageMention.deleteMany({ where: { sessionId } });
-      await prisma.chatAttachment.deleteMany({ where: { sessionId } });
-    } catch (err) {
-      console.warn("[chat:history] chip cleanup failed", err);
-    }
+    // A cleared session keeps no chips: mentions and attachments go with it.
+    await purgeSessionChips(
+      options.scope.userId,
+      options.scope.sessionId,
+    );
   }
 }

@@ -16,3 +16,4 @@ apps/api/src/generated/
 
 # Conversion artifacts written at runtime (later: object storage)
 apps/api/data/
+/resources*

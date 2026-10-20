@@ -46,7 +46,14 @@ import {
   AttachmentTray,
   useAttachmentTray,
 } from './attachments'
-import { MessagePart, CopyMessage, MessageMentions, MessageAttachments } from './message'
+import {
+  MessagePart,
+  CopyMessage,
+  MessageMentions,
+  MessageAttachments,
+  type UiAttachment,
+  type UiMention,
+} from './message'
 import { ScrollToBottom } from './ScrollToBottom'
 
 /** Entity payload attached by the `@` trigger. */
@@ -395,18 +402,51 @@ export function DocChat({
                   // Hard guard: a submit racing a still-processing chip must
                   // never send stale ids (the server would 403/ignore them).
                   if (tray.busy) return
-                  mentionsRef.current = entities
+                  const mentions: UiMention[] = entities
                     .filter((e) => e.triggerId === 'documents')
-                    .map((e) => (e.data as MentionEntityData | undefined)?.docId)
-                    .filter((id): id is string => Boolean(id))
+                    .flatMap((e) => {
+                      const data = e.data as MentionEntityData | undefined
+                      if (!data?.docId) return []
+                      return [
+                        {
+                          docId: data.docId,
+                          documentName: data.documentName ?? data.docId,
+                          workspaceId: data.workspaceId ?? null,
+                          deleted: false,
+                        },
+                      ]
+                    })
+                  mentionsRef.current = mentions.map((m) => m.docId)
                   attachmentsRef.current = tray.readyIds
+                  // Optimistic chips: the server attaches the same snapshot to
+                  // history, but the live user bubble only has what we send.
+                  const attachments: UiAttachment[] = tray.items
+                    .filter((it) => it.status === 'ready' && it.id)
+                    .map((it) => ({
+                      id: it.id as string,
+                      filename: it.name,
+                      mimeType: it.mimeType ?? '',
+                      sizeBytes: it.size,
+                      truncated: it.truncated === true,
+                      deleted: false,
+                    }))
+                  const metadata =
+                    mentions.length > 0 || attachments.length > 0
+                      ? {
+                          ...(mentions.length > 0 ? { mentions } : {}),
+                          ...(attachments.length > 0 ? { attachments } : {}),
+                        }
+                      : undefined
                   clear()
+                  // Clear the tray as soon as the turn starts, not after the
+                  // stream ends (sendMessage resolves when the answer is done).
+                  const pending = controller.sendMessage({ text, metadata })
+                  tray.clearSent()
                   try {
-                    await controller.sendMessage(text)
+                    await pending
                   } finally {
                     mentionsRef.current = []
                     attachmentsRef.current = []
-                    tray.clearSent()
                   }
                 }}
               >

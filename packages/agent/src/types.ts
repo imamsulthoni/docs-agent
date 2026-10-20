@@ -41,6 +41,20 @@ export interface AttachmentContext {
   flagged?: boolean
 }
 
+/** Earlier-turn file the model can pull passages from with `attachmentSearch`. */
+export interface AttachmentCatalogEntry {
+  name: string
+  /** Char count when already known (metadata-only listings may omit it). */
+  chars?: number
+  truncated?: boolean
+}
+
+/** One keyword hit inside an earlier-turn attachment. */
+export interface AttachmentSearchHit {
+  filename: string
+  snippet: string
+}
+
 /** One document available to the agent for a single turn. */
 export interface DocumentScope {
   docId: string

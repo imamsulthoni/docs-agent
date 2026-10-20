@@ -8,6 +8,10 @@ import { OpenAIClient } from "@anvia/openai";
 import { PrismaMemoryStore } from "@anvia/memory-prisma";
 import type { Message } from "@anvia/core";
 import {
+  ATTACH_FOLLOWUP_MAX_CHARS,
+  ATTACH_FOLLOWUP_TOTAL_MAX_CHARS,
+  ATTACH_INJECT_MAX_CHARS,
+  ATTACH_TOTAL_MAX_CHARS,
   CHAT_MODEL,
   CHAT_HISTORY_TURNS,
   CHAT_MAX_TURNS,
@@ -24,10 +28,22 @@ import {
   type MentionSnapshot,
 } from "./history-store.js";
 import {
+  listSessionAttachments,
   loadAttachmentChips,
+  loadAttachmentContents,
+  searchSessionAttachments,
+  toAttachmentContexts,
+  type AttachmentSearchHit,
   type ReadyAttachment,
   type UiAttachment,
 } from "./attachments/service.js";
+import { clipAttachments } from "./attachments/budget.js";
+import {
+  hasAttachmentIntent,
+  matchAttachmentNames,
+} from "./attachments/intent.js";
+import { sanitizeFilename } from "./attachments/magic.js";
+import { purgeSessionChips } from "./session-purge.js";
 import { prisma } from "../../utils/prisma.js";
 import { getOwnedMentionableDocs } from "../workspaces/service.js";
 import {
@@ -38,12 +54,15 @@ import {
 } from "../../rag/vector.js";
 import {
   buildAnswerPrompt,
+  createAttachmentSearchTool,
   createDocAgent,
   createDocumentReadTool,
   createDocumentSearchTool,
   retrieveKeyword,
   toCitations,
   NotConfiguredError,
+  type AttachmentCatalogEntry,
+  type AttachmentContext,
   type Citation,
   type RetrievedPage,
 } from "@docs-agent/agent";
@@ -379,6 +398,7 @@ export async function clearHistory(
 ): Promise<void> {
   const memory = getMemoryStore();
   await memory.clear({ scope: { sessionId, userId } });
+  await purgeSessionChips(userId, sessionId);
 }
 
 /** Retrieval budget: the active document first, then each mention. */
@@ -565,17 +585,98 @@ async function createToolsForDocuments(
   return tools;
 }
 
+export type ChatScope = { sessionId: string; userId: string };
+
+type AttachmentTurn = {
+  attachments: AttachmentContext[];
+  catalog: AttachmentCatalogEntry[];
+  search?: (query: string) => Promise<AttachmentSearchHit[]>;
+};
+
+/**
+ * Decide what attachment text goes into this turn's prompt. Current-turn
+ * uploads win; otherwise an intent-gated keyword lookup over the session's
+ * ready attachments supplies either the file itself or a catalog to ask about.
+ */
+async function buildAttachmentTurn(
+  question: string,
+  current: ReadyAttachment[],
+  scope: ChatScope,
+): Promise<AttachmentTurn> {
+  if (current.length > 0) {
+    return {
+      attachments: clipAttachments(current, {
+        perFile: ATTACH_INJECT_MAX_CHARS,
+        total: ATTACH_TOTAL_MAX_CHARS,
+      }),
+      catalog: [],
+    };
+  }
+  if (!hasAttachmentIntent(question)) return { attachments: [], catalog: [] };
+
+  const rows = await listSessionAttachments(scope.userId, scope.sessionId);
+  if (rows.length === 0) return { attachments: [], catalog: [] };
+
+  const catalogOf = (entries: typeof rows): AttachmentCatalogEntry[] =>
+    entries.map((row) => ({
+      name: sanitizeFilename(row.filename),
+      ...(row.truncated ? { truncated: true } : {}),
+    }));
+  const search =
+    rows.length >= 2
+      ? (query: string) =>
+          searchSessionAttachments(scope.userId, scope.sessionId, query)
+      : undefined;
+
+  const named = matchAttachmentNames(question, rows);
+  if (named.length > 1) {
+    return {
+      attachments: [],
+      catalog: catalogOf(named),
+      ...(search ? { search } : {}),
+    };
+  }
+
+  const pick = named.length === 1 ? named : rows.length === 1 ? rows : [];
+  if (pick.length === 0) {
+    return {
+      attachments: [],
+      catalog: catalogOf(rows),
+      ...(search ? { search } : {}),
+    };
+  }
+
+  const loaded = await loadAttachmentContents(
+    scope.userId,
+    scope.sessionId,
+    [pick[0].id],
+  );
+  return {
+    attachments: toAttachmentContexts(loaded, {
+      perFile: ATTACH_FOLLOWUP_MAX_CHARS,
+      total: ATTACH_FOLLOWUP_TOTAL_MAX_CHARS,
+    }),
+    catalog: [],
+    ...(search ? { search } : {}),
+  };
+}
+
 async function buildAgent(
   docId: string,
   summary: string | null,
   documents: RetrievalDoc[],
   mentions: MentionSnapshot[],
   attachmentIds: string[] = [],
+  attachmentSearch?: (query: string) => Promise<AttachmentSearchHit[]>,
 ) {
   const model = getClient().completionModel({
     modelId: CHAT_MODEL,
     api: "chat",
   });
+  const tools = await createToolsForDocuments(documents);
+  if (attachmentSearch) {
+    tools.push(createAttachmentSearchTool({ search: attachmentSearch }));
+  }
   return createDocAgent({
     docId,
     model,
@@ -585,7 +686,7 @@ async function buildAgent(
       documentName: d.documentName || d.docId,
       active: d.active,
     })),
-    tools: await createToolsForDocuments(documents),
+    tools,
     maxTurns: CHAT_MAX_TURNS,
     memory: new LeanHistoryStore(
       getMemoryStore(),
@@ -661,6 +762,7 @@ export async function prepareAnswer(
   mentions: MentionSnapshot[] = [],
   activeDocumentName = "",
   attachments: ReadyAttachment[] = [],
+  scope: ChatScope,
 ) {
   const documents: RetrievalDoc[] = [
     { docId, documentName: activeDocumentName || docId, active: true },
@@ -670,17 +772,26 @@ export async function prepareAnswer(
       active: false,
     })),
   ];
-  const pages = await retrievePagesForDocs(documents, question);
+  const [pages, attachmentTurn] = await Promise.all([
+    retrievePagesForDocs(documents, question),
+    buildAttachmentTurn(question, attachments, scope),
+  ]);
   const agent = await buildAgent(
     docId,
     summary,
     documents,
     mentions,
     attachments.map((a) => a.id),
+    attachmentTurn.search,
   );
   return {
     pages,
-    prompt: buildAnswerPrompt(question, pages, attachments),
+    prompt: buildAnswerPrompt(
+      question,
+      pages,
+      attachmentTurn.attachments,
+      attachmentTurn.catalog,
+    ),
     agent,
   };
 }
@@ -703,6 +814,7 @@ export async function* streamAgentAnswer(
     mentions,
     activeDocumentName,
     attachments,
+    { sessionId, userId },
   );
   yield* agent.stream({
     prompt,
@@ -728,6 +840,7 @@ export async function* streamAnswer(
     mentions,
     activeDocumentName,
     attachments,
+    { sessionId, userId },
   );
   yield { type: "citations", citations: toCitations(pages) };
 

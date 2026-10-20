@@ -14,7 +14,7 @@ const chip =
   'inline-flex max-w-[14rem] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium'
 
 /** Mention chip persisted server-side with the user message. */
-type UiMention = {
+export type UiMention = {
   docId: string
   documentName: string
   workspaceId: string | null
@@ -22,7 +22,7 @@ type UiMention = {
 }
 
 /** Attachment chip persisted server-side with the user message. */
-type UiAttachment = {
+export type UiAttachment = {
   id: string
   filename: string
   mimeType: string

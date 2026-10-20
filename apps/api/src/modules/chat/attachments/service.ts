@@ -1,5 +1,9 @@
 import {
   ATTACH_MAX_CHARS,
+  ATTACH_SEARCH_CANDIDATES,
+  ATTACH_SEARCH_MAX_ROWS,
+  ATTACH_SEARCH_SNIPPET_CHARS,
+  ATTACH_SEARCH_TOP_K,
   ATTACH_STALE_MS,
 } from "../../../config.js";
 import { containsInjectionPattern, type AttachmentContext } from "@docs-agent/agent";
@@ -9,6 +13,8 @@ import { converterClient } from "../../converter/client.js";
 import type { ArtifactPayload } from "../../documents/artifacts.js";
 import { isConverterTimeout } from "../../converter/utils.js";
 import { sanitizeFilename, truncateAttachmentContent, type AttachmentKind } from "./magic.js";
+import { clipAttachments, type ClipBudget } from "./budget.js";
+import { searchTokens } from "./intent.js";
 
 export type AttachmentStatus = "processing" | "ready" | "failed" | "deleted";
 
@@ -360,6 +366,163 @@ export async function loadAttachmentChips(
     byRun.set(row.messageRef, messages);
   }
   return byRun;
+}
+
+export type SessionAttachmentRow = {
+  id: string;
+  filename: string;
+  truncated: boolean;
+  createdAt: Date;
+};
+
+/** Ready attachments of one chat session (metadata only, no markdown). */
+export async function listSessionAttachments(
+  ownerId: string,
+  sessionId: string,
+): Promise<SessionAttachmentRow[]> {
+  return prisma.chatAttachment.findMany({
+    where: {
+      ownerId,
+      sessionId,
+      status: "ready",
+      markdown: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+    take: ATTACH_SEARCH_MAX_ROWS,
+    select: {
+      id: true,
+      filename: true,
+      truncated: true,
+      createdAt: true,
+    },
+  });
+}
+
+export type LoadedAttachment = {
+  id: string;
+  filename: string;
+  markdown: string | null;
+  truncated: boolean;
+};
+
+/** Full text for a bounded set of the session's ready attachments. */
+export async function loadAttachmentContents(
+  ownerId: string,
+  sessionId: string,
+  ids: readonly string[],
+): Promise<LoadedAttachment[]> {
+  if (ids.length === 0) return [];
+  return prisma.chatAttachment.findMany({
+    where: { id: { in: [...ids] }, ownerId, sessionId, status: "ready" },
+    orderBy: { createdAt: "asc" },
+    take: ATTACH_SEARCH_CANDIDATES,
+    select: { id: true, filename: true, markdown: true, truncated: true },
+  });
+}
+
+export type AttachmentSearchHit = {
+  id: string;
+  filename: string;
+  snippet: string;
+  score: number;
+};
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let at = haystack.indexOf(needle);
+  while (at >= 0) {
+    count += 1;
+    at = haystack.indexOf(needle, at + needle.length);
+  }
+  return count;
+}
+
+function snippetAround(
+  content: string,
+  tokens: readonly string[],
+  maxChars: number,
+): string {
+  const lower = content.toLowerCase();
+  let at = -1;
+  for (const token of tokens) {
+    const index = lower.indexOf(token);
+    if (index >= 0 && (at < 0 || index < at)) at = index;
+  }
+  const start = Math.max(0, at - Math.floor(maxChars / 3));
+  const end = Math.min(content.length, start + maxChars);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < content.length ? "…" : "";
+  return `${prefix}${content.slice(start, end).trim()}${suffix}`;
+}
+
+/**
+ * Keyword search over one session's ready attachments. Postgres only pre-filters
+ * candidates (bounded by ATTACH_SEARCH_CANDIDATES) — scoring and snippets stay
+ * in-process so results are deterministic and cheap for the chat path.
+ */
+export async function searchSessionAttachments(
+  ownerId: string,
+  sessionId: string,
+  query: string,
+): Promise<AttachmentSearchHit[]> {
+  const tokens = searchTokens(query);
+  if (tokens.length === 0) return [];
+  const rows = await prisma.chatAttachment.findMany({
+    where: {
+      ownerId,
+      sessionId,
+      status: "ready",
+      markdown: { not: null },
+      OR: tokens.map((token) => ({
+        markdown: { contains: token, mode: "insensitive" },
+      })),
+    },
+    orderBy: { createdAt: "desc" },
+    take: ATTACH_SEARCH_CANDIDATES,
+    select: { id: true, filename: true, markdown: true },
+  });
+
+  return rows
+    .map((row) => {
+      const content = row.markdown ?? "";
+      const lower = content.toLowerCase();
+      const score = tokens.reduce(
+        (sum, token) => sum + countOccurrences(lower, token),
+        0,
+      );
+      return {
+        id: row.id,
+        filename: sanitizeFilename(row.filename),
+        snippet: snippetAround(content, tokens, ATTACH_SEARCH_SNIPPET_CHARS),
+        score,
+      };
+    })
+    .filter((hit) => hit.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, ATTACH_SEARCH_TOP_K);
+}
+
+/** Prompt contexts for earlier-turn attachments, with clipping/injection flags. */
+export function toAttachmentContexts(
+  rows: ReadonlyArray<{
+    filename: string;
+    markdown: string | null;
+    truncated: boolean;
+  }>,
+  budget: ClipBudget,
+): AttachmentContext[] {
+  return clipAttachments(
+    rows.map((row) => {
+      const content = row.markdown ?? "";
+      return {
+        name: sanitizeFilename(row.filename),
+        content,
+        ...(row.truncated ? { truncated: true } : {}),
+        ...(containsInjectionPattern(content) ? { flagged: true } : {}),
+      };
+    }),
+    budget,
+  );
 }
 
 export type CreateAttachmentInput = {

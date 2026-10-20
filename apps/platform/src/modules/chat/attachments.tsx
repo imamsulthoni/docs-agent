@@ -18,6 +18,8 @@ export interface TrayItem {
   status: 'uploading' | 'processing' | 'ready' | 'failed'
   /** Server row id — set once the upload POST resolved. */
   id?: string
+  /** Browser-declared MIME type, used for the optimistic message chip. */
+  mimeType?: string
   truncated?: boolean
   error?: string
 }
@@ -119,6 +121,7 @@ export function useAttachmentTray(docId: string, sessionId: string) {
           key: `f${++seq.current}`,
           name: file.name,
           size: file.size,
+          mimeType: file.type || undefined,
           status: 'uploading',
         }))
         for (const [i, file] of take.entries()) {
