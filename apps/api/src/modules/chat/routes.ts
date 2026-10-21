@@ -4,6 +4,8 @@ import { createClientStreamResponse } from "@anvia/server";
 import { NotConfiguredError } from "@docs-agent/agent";
 import { ATTACHMENTS_HEADER, MENTIONS_HEADER, sessionUserId } from "../../config.js";
 import { loadSession, type AuthVariables } from "../auth/middleware.js";
+import { chatRateLimit } from "../../middleware/rateLimit.js";
+import { isDocAccessible } from "../documents/access.js";
 import { getDocStatus } from "../documents/store.js";
 import type { MentionSnapshot } from "./history-store.js";
 import {
@@ -43,6 +45,9 @@ chatRoutes.get("/chat/:docId/:sessionId", async (c) => {
     chatIdentity(c),
   );
   if (!scope.ok) return c.json({ detail: scope.detail }, scope.status);
+  if (!(await isDocAccessible(scope.docId, chatIdentity(c)))) {
+    return c.json({ detail: "Not found." }, 404);
+  }
   try {
     const messages = await loadUiHistory(scope.sessionId, scope.userId);
     return c.json({ sessionId: scope.sessionId, messages });
@@ -62,6 +67,9 @@ chatRoutes.delete("/chat/:docId/:sessionId", async (c) => {
     chatIdentity(c),
   );
   if (!scope.ok) return c.json({ detail: scope.detail }, scope.status);
+  if (!(await isDocAccessible(scope.docId, chatIdentity(c)))) {
+    return c.json({ detail: "Not found." }, 404);
+  }
   try {
     await clearHistory(scope.sessionId, scope.userId);
     return c.json({ sessionId: scope.sessionId, cleared: true });
@@ -73,7 +81,7 @@ chatRoutes.delete("/chat/:docId/:sessionId", async (c) => {
   }
 });
 
-chatRoutes.post("/chat/:docId/:sessionId", async (c) => {
+chatRoutes.post("/chat/:docId/:sessionId", chatRateLimit, async (c) => {
   const scope = readChatScope(
     c.req.param("docId"),
     c.req.param("sessionId"),
@@ -81,11 +89,16 @@ chatRoutes.post("/chat/:docId/:sessionId", async (c) => {
     chatIdentity(c),
   );
   if (!scope.ok) return c.json({ detail: scope.detail }, scope.status);
+  const identity = chatIdentity(c);
+  // Private docs (owned) must never be readable by other accounts or guests,
+  // even when the opaque docId leaks. Guest docs stay open as before.
+  if (!(await isDocAccessible(scope.docId, identity))) {
+    return c.json({ detail: "Not found." }, 404);
+  }
 
   const parsed = parseChatQuestion(await c.req.json().catch(() => null));
   if (!parsed.ok) return c.json({ detail: parsed.detail }, parsed.status);
 
-  const identity = chatIdentity(c);
   const parsedMentions = parseMentionHeader(
     c.req.header(MENTIONS_HEADER),
     scope.docId,

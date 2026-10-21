@@ -1,8 +1,9 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { DOC_ID_RE, sessionUserId } from '../../config.js'
 import { auth } from '../auth/auth.js'
 import { loadSession, type AuthVariables } from '../auth/middleware.js'
 import { getOwnerDocuments, getOwnerLandingDocuments, getMentionableDocuments } from '../workspaces/service.js'
+import { isDocAccessible } from './access.js'
 import { isPersistentDoc, readArtifactMeta, readPublicFile } from './artifacts.js'
 import { deleteDocument, getMarkdownDownload, listDocuments } from './service.js'
 import { bodyBytes, publicRelativePath } from './utils.js'
@@ -46,10 +47,20 @@ documentsRoutes.get('/mentionable-documents', loadSession, async (c) => {
   return c.json({ documents })
 })
 
-/** Download markdown file */
-documentsRoutes.get('/download/:docId', async (c) => {
+/** Session identity (`u:<id>`) or null for guests. */
+function identityOf(c: Context<{ Variables: AuthVariables }>): string | null {
+  const user = c.get('user')
+  return user ? sessionUserId(user.id) : null
+}
+
+/** Download markdown file (owner-only for private docs). */
+documentsRoutes.get('/download/:docId', loadSession, async (c) => {
   const docId = c.req.param('docId')
   if (!DOC_ID_RE.test(docId)) return c.json({ detail: 'Invalid doc_id.' }, 400)
+  // 404 (not 403): do not reveal that a private document exists.
+  if (!(await isDocAccessible(docId, identityOf(c)))) {
+    return c.json({ detail: 'Not found.' }, 404)
+  }
   const file = await getMarkdownDownload(docId)
   if (!file) return c.json({ detail: 'Markdown not found / expired.' }, 404)
   return new Response(bodyBytes(file.body), {
@@ -60,10 +71,14 @@ documentsRoutes.get('/download/:docId', async (c) => {
   })
 })
 
-/** Delete document artifacts and gateway state. */
-documentsRoutes.delete('/documents/:docId', async (c) => {
+/** Delete document artifacts and gateway state (owner-only for private docs). */
+documentsRoutes.delete('/documents/:docId', loadSession, async (c) => {
   const docId = c.req.param('docId')
   if (!DOC_ID_RE.test(docId)) return c.json({ detail: 'Invalid doc_id.' }, 400)
+  const identity = identityOf(c)
+  if (!(await isDocAccessible(docId, identity))) {
+    return c.json({ detail: 'Not found.' }, 404)
+  }
   await deleteDocument(docId)
   return c.json({ doc_id: docId, deleted: true })
 })

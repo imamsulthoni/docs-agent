@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { DOC_ID_RE, MAX_UPLOAD_BYTES, sessionUserId } from "../../config.js";
 import { stripImageBytes } from "../documents/artifacts.js";
 import { loadSession, type AuthVariables } from "../auth/middleware.js";
+import { uploadRateLimit } from "../../middleware/rateLimit.js";
 import {
   cancelConversionJob,
   convertDocument,
@@ -70,6 +71,12 @@ export async function runSyncConvert(
   if (result.type === "bad-json") {
     return c.json({ detail: "Conversion response was not JSON." }, 502);
   }
+  if (result.type === "quota-exceeded") {
+    return c.json(
+      { detail: result.detail, code: "storage_quota_exceeded" },
+      413,
+    );
+  }
   if (result.type === "store-failed") {
     return c.json({ detail: result.detail }, result.status);
   }
@@ -77,7 +84,10 @@ export async function runSyncConvert(
 }
 
 /** Async conversion: 202 immediately, client polls GET /v1/convert/jobs/:jobId. */
-export async function runAsyncConvert(c: Ctx): Promise<Response> {
+export async function runAsyncConvert(
+  c: Ctx,
+  ctx: PersistContext,
+): Promise<Response> {
   const requestId = c.get("requestId") as string | undefined;
   let form: FormData;
   try {
@@ -88,9 +98,15 @@ export async function runAsyncConvert(c: Ctx): Promise<Response> {
   const upload = parseConvertForm(form);
   if (!upload.ok) return c.json({ detail: upload.detail }, upload.status);
 
-  const result = await startConversion(upload, requestId);
+  const result = await startConversion(upload, requestId, ctx);
   if (result.type === "unavailable") {
     return c.json({ detail: "Conversion service unavailable." }, 502);
+  }
+  if (result.type === "quota-exceeded") {
+    return c.json(
+      { detail: result.detail, code: "storage_quota_exceeded" },
+      413,
+    );
   }
   if (result.type === "queue-full") {
     return c.json(
@@ -108,12 +124,17 @@ export async function runAsyncConvert(c: Ctx): Promise<Response> {
 }
 
 /** Sync conversion for guests and logged-in users (no workspace). */
-converterRoutes.post("/convert", (c) =>
+converterRoutes.post("/convert", uploadRateLimit, (c) =>
   runSyncConvert(c, { ownerId: ownerFromSession(c), workspaceId: null }),
 );
 
 /** Async conversion for guests and logged-in users (no workspace). */
-converterRoutes.post("/convert/jobs", (c) => runAsyncConvert(c));
+converterRoutes.post("/convert/jobs", uploadRateLimit, (c) =>
+  runAsyncConvert(c, {
+    ownerId: ownerFromSession(c),
+    workspaceId: null,
+  }),
+);
 
 /** Get async job status. */
 converterRoutes.get("/convert/jobs/:jobId", async (c) => {

@@ -12,6 +12,8 @@ import {
   requireAuth,
   type AuthVariables,
 } from "../../auth/middleware.js";
+import { attachmentRateLimit } from "../../../middleware/rateLimit.js";
+import { QuotaExceededError, reserveStorage } from "../../documents/quota.js";
 import {
   countOpenAttachments,
   createAttachmentRow,
@@ -38,6 +40,7 @@ function ownerIdFrom(c: Ctx): string {
 attachmentRoutes.post(
   "/chat/:docId/attachments",
   requireAuth,
+  attachmentRateLimit,
   bodyLimit({ maxSize: ATTACH_MAX_BYTES + 512 * 1024 }),
   async (c) => {
     const requestId = c.get("requestId") as string | undefined;
@@ -93,14 +96,31 @@ attachmentRoutes.post(
     }
 
     const filename = sanitizeFilename(file.name);
-    const row = await createAttachmentRow({
-      ownerId,
-      docId,
-      sessionId,
-      filename,
-      mimeType: sniffed.mime,
-      sizeBytes: file.size,
-    });
+    // Counted against the account quota; the insert + check share one
+    // transaction so concurrent uploads cannot overshoot.
+    const reserved = await reserveStorage(ownerId, file.size, (db) =>
+      createAttachmentRow(
+        {
+          ownerId,
+          docId,
+          sessionId,
+          filename,
+          mimeType: sniffed.mime,
+          sizeBytes: file.size,
+        },
+        db,
+      ),
+    );
+    if (!reserved.ok) {
+      return c.json(
+        {
+          detail: new QuotaExceededError(reserved.usedBytes).message,
+          code: "storage_quota_exceeded",
+        },
+        413,
+      );
+    }
+    const row = reserved.value;
 
     // Kick off in-process processing; the client polls until ready/failed.
     startAttachmentProcessing({

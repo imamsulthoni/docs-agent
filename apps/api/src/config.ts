@@ -37,6 +37,14 @@ export const ARTIFACT_MAX_MB = Number(env("ARTIFACT_MAX_MB", "1024"));
 export const ARTIFACT_MAX_BYTES = ARTIFACT_MAX_MB * 1024 * 1024;
 
 /**
+ * Per-account storage quota (BRD §9). Counts artifact folder bytes for owned
+ * documents plus uploaded attachment bytes. 0 disables the per-owner check;
+ * the global ARTIFACT_MAX_BYTES cap always stays active.
+ */
+export const ACCOUNT_QUOTA_MB = Number(env("ACCOUNT_QUOTA_MB", "1024"));
+export const ACCOUNT_QUOTA_BYTES = ACCOUNT_QUOTA_MB * 1024 * 1024;
+
+/**
  * Upper bound for a proxied conversion request (gateway → converter).
  * Large PDFs take minutes on the single-worker converter, far beyond
  * undici's default headers timeout — without this the request dies with
@@ -45,6 +53,30 @@ export const ARTIFACT_MAX_BYTES = ARTIFACT_MAX_MB * 1024 * 1024;
 export const CONVERT_TIMEOUT_MS = Number(env("CONVERT_TIMEOUT_MS", "600000"));
 
 export const DOC_ID_RE = /^[0-9a-f]{32}$/;
+
+// ---- Abuse limits (in-process fixed window; move to Redis for multi-instance) ----
+
+export const RATE_LIMIT_GLOBAL_PER_MIN = Number(
+  env("RATE_LIMIT_GLOBAL_PER_MIN", "120"),
+);
+export const RATE_LIMIT_CHAT_PER_MIN = Number(
+  env("RATE_LIMIT_CHAT_PER_MIN", "20"),
+);
+export const RATE_LIMIT_UPLOAD_PER_MIN = Number(
+  env("RATE_LIMIT_UPLOAD_PER_MIN", "10"),
+);
+export const RATE_LIMIT_ATTACHMENT_PER_MIN = Number(
+  env("RATE_LIMIT_ATTACHMENT_PER_MIN", "20"),
+);
+
+/**
+ * Emails allowed to call `/v1/debug/*` in production. Outside production the
+ * endpoint stays open for local debugging; `/v1/status/:docId` is unaffected.
+ */
+export const ADMIN_EMAILS = env("ADMIN_EMAILS", "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 /**
  * Cross-workspace mentions travel outside the Anvia envelope (header, not

@@ -1,5 +1,8 @@
 import { prisma } from '../../utils/prisma.js'
+import type { Prisma } from '../../generated/prisma/client.js'
 import { deleteDocVectors } from '../../rag/vector.js'
+
+type Db = Prisma.TransactionClient | typeof prisma
 
 export interface PendingDoc {
   docId: string
@@ -8,11 +11,16 @@ export interface PendingDoc {
   stats: unknown
   ownerId?: string | null
   workspaceId?: string | null
+  /** Artifact folder bytes, used by the per-account quota. */
+  sizeBytes?: number
 }
 
 /** Record converter result so the async worker can index it. */
-export async function upsertPendingDoc(doc: PendingDoc): Promise<void> {
-  await prisma.document.upsert({
+export async function upsertPendingDoc(
+  doc: PendingDoc,
+  db: Db = prisma,
+): Promise<void> {
+  await db.document.upsert({
     where: { id: doc.docId },
     update: {
       name: doc.name,
@@ -20,6 +28,7 @@ export async function upsertPendingDoc(doc: PendingDoc): Promise<void> {
       stats: (doc.stats ?? {}) as object,
       ...(doc.ownerId !== undefined ? { ownerId: doc.ownerId } : {}),
       ...(doc.workspaceId !== undefined ? { workspaceId: doc.workspaceId } : {}),
+      ...(doc.sizeBytes !== undefined ? { sizeBytes: doc.sizeBytes } : {}),
     },
     create: {
       id: doc.docId,
@@ -29,6 +38,7 @@ export async function upsertPendingDoc(doc: PendingDoc): Promise<void> {
       isProcessed: false,
       ownerId: doc.ownerId ?? null,
       workspaceId: doc.workspaceId ?? null,
+      sizeBytes: doc.sizeBytes ?? 0,
     },
   })
 }

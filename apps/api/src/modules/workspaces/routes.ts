@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception'
 import { bodyLimit } from 'hono/body-limit'
 import { MAX_UPLOAD_BYTES, DOC_ID_RE, sessionUserId } from '../../config.js'
 import { requireAuth, type AuthVariables } from '../auth/middleware.js'
+import { uploadRateLimit } from '../../middleware/rateLimit.js'
 import { stripImageBytes } from '../documents/artifacts.js'
 import { getConversionJob } from '../converter/service.js'
 import { runAsyncConvert, runSyncConvert } from '../converter/routes.js'
@@ -82,7 +83,7 @@ workspaceRoutes.get('/workspaces/:id/documents', async (c) => {
 })
 
 /** Upload + convert a PDF into a workspace (sync). */
-workspaceRoutes.post('/workspaces/:id/convert', async (c) => {
+workspaceRoutes.post('/workspaces/:id/convert', uploadRateLimit, async (c) => {
   const id = c.req.param('id')
   const owner = ownerId(c)
   if (!(await getWorkspace(id, owner))) {
@@ -92,13 +93,13 @@ workspaceRoutes.post('/workspaces/:id/convert', async (c) => {
 })
 
 /** Upload + convert a PDF into a workspace (async job). */
-workspaceRoutes.post('/workspaces/:id/convert/jobs', async (c) => {
+workspaceRoutes.post('/workspaces/:id/convert/jobs', uploadRateLimit, async (c) => {
   const id = c.req.param('id')
   const owner = ownerId(c)
   if (!(await getWorkspace(id, owner))) {
     return c.json({ detail: 'Workspace not found.' }, 404)
   }
-  return runAsyncConvert(c)
+  return runAsyncConvert(c, { ownerId: owner, workspaceId: id })
 })
 
 /** Poll a workspace conversion; the finished doc is attributed to the workspace. */

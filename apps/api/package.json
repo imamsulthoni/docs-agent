@@ -13,6 +13,7 @@
     "start:worker": "node dist/worker.js",
     "db:generate": "pnpm with-env prisma generate",
     "db:migrate": "pnpm with-env prisma migrate dev",
+    "db:backfill-sizes": "pnpm with-env tsx src/scripts/backfill-document-sizes.ts",
     "db:deploy": "pnpm with-env prisma migrate deploy",
     "db:studio": "pnpm with-env prisma studio",
     "test": "node --import tsx --test \"test/**/*.test.ts\""

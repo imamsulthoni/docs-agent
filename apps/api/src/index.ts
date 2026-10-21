@@ -8,13 +8,15 @@ import {
   deleteArtifact,
   listExpiredDocIds,
 } from "./modules/documents/artifacts.js";
-import { rateLimit } from "./middleware/rateLimit.js";
+import { globalRateLimit } from "./middleware/rateLimit.js";
 import { deleteDocCascade } from "./modules/documents/store.js";
 import { converterRoutes } from "./modules/converter/routes.js";
 import { documentsRoutes, publicRoutes } from "./modules/documents/routes.js";
 import { workspaceRoutes } from "./modules/workspaces/routes.js";
+import { accountRoutes } from "./modules/account/routes.js";
 import { healthRoutes } from "./modules/health/routes.js";
 import { debugRoutes } from "./modules/debug/routes.js";
+import { isDebugAdmin } from "./modules/debug/access.js";
 import { chatRoutes } from "./modules/chat/routes.js";
 import { attachmentRoutes } from "./modules/chat/attachments/routes.js";
 
@@ -43,23 +45,32 @@ app.use(
     exposeHeaders: ["x-anvia-stream-protocol"],
   }),
 );
-app.use("*", rateLimit);
+// Coarse abuse cap for the API only: static artifacts and health probes are
+// excluded so a markdown page with many images cannot trip the limiter.
+app.use("/v1/*", globalRateLimit);
 
 // Better Auth owns /api/auth/* (OAuth callbacks + session endpoints). Mounted
 // before /v1; guests never touch it.
 app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
 
 // Which sign-in methods are available, so the platform can hide OAuth buttons
-// that have no credentials configured.
-app.get("/v1/auth/config", (c) =>
-  c.json({ emailPassword: true, google: isGoogleAuthEnabled }),
-);
+// that have no credentials configured. `debugAccess` lets the platform hide
+// the /v1/debug button for non-admins (the API still enforces it).
+app.get("/v1/auth/config", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  return c.json({
+    emailPassword: true,
+    google: isGoogleAuthEnabled,
+    debugAccess: isDebugAdmin(session?.user ?? null),
+  });
+});
 
 // API endpoints (converter proxy, documents, chat, debug) live under /v1.
 const v1 = new Hono();
 v1.route("/", converterRoutes);
 v1.route("/", documentsRoutes);
 v1.route("/", workspaceRoutes);
+v1.route("/", accountRoutes);
 // Attachment routes before :sessionId chat routes; static paths win anyway,
 // but this order makes the intent obvious.
 v1.route("/", attachmentRoutes);

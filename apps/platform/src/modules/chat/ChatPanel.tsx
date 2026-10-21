@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { UIMessage } from '@anvia/react'
 import { API_URL } from '../../lib/api'
-import { useSession } from '../../lib/auth'
+import { fetchAuthConfig, useSession } from '../../lib/auth'
 import { useI18n } from '../../lib/i18n'
 import { getOrCreateFpId, resetFpId } from '../../lib/identity'
 import { Alert } from '../../components/ui/Alert'
@@ -31,11 +31,22 @@ export function ChatPanel({
   const [polls, setPolls] = useState(0)
   const [debug, setDebug] = useState<unknown>(null)
   const [debugLoading, setDebugLoading] = useState(false)
+  const [debugAccess, setDebugAccess] = useState(false)
   const confirm = useConfirm()
   const { t } = useI18n()
   // Signed-in documents never expire, so "gone" only ever means deleted.
   const { data: session } = useSession()
   const signedIn = Boolean(session?.user)
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchAuthConfig().then((cfg) => {
+      if (!cancelled) setDebugAccess(cfg.debugAccess)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function checkDebug() {
     setDebugLoading(true)
@@ -201,15 +212,17 @@ export function ChatPanel({
                 <span className="font-mono">{docId}</span>
               </p>
               <p>{t('chat.debugHelp')}</p>
-              <button
-                type="button"
-                onClick={() => void checkDebug()}
-                disabled={debugLoading}
-                className="rounded-sm border border-line px-2.5 py-1 text-xs font-medium text-fg hover:bg-surface-2 disabled:opacity-40"
-              >
-                {debugLoading ? t('chat.debugChecking') : t('chat.debugCheck')}
-              </button>
-              {debug !== null && (
+              {debugAccess && (
+                <button
+                  type="button"
+                  onClick={() => void checkDebug()}
+                  disabled={debugLoading}
+                  className="rounded-sm border border-line px-2.5 py-1 text-xs font-medium text-fg hover:bg-surface-2 disabled:opacity-40"
+                >
+                  {debugLoading ? t('chat.debugChecking') : t('chat.debugCheck')}
+                </button>
+              )}
+              {debugAccess && debug !== null && (
                 <pre className="max-h-64 overflow-auto rounded-sm bg-code p-2 font-mono text-[0.7rem] leading-relaxed text-fg">
                   {JSON.stringify(debug, null, 2)}
                 </pre>

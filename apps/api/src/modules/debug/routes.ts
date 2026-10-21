@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
 import { DOC_ID_RE } from '../../config.js'
+import { loadSession, type AuthVariables } from '../auth/middleware.js'
 import { getDocStatus } from '../documents/store.js'
+import { isDebugAdmin } from './access.js'
 import { getIndexDebugReport } from './service.js'
 
-const debugRoutes = new Hono()
+const debugRoutes = new Hono<{ Variables: AuthVariables }>()
 
 /** Document indexing status */
 debugRoutes.get('/status/:docId', async (c) => {
@@ -29,7 +31,12 @@ debugRoutes.get('/status/:docId', async (c) => {
  * - queue: BullMQ job state (null when Redis unavailable; failedReason = worker error)
  * - env: which infra is configured
  */
+debugRoutes.use('/debug/*', loadSession)
+
 debugRoutes.get('/debug/:docId', async (c) => {
+  if (!isDebugAdmin(c.get('user'))) {
+    return c.json({ detail: 'Debug endpoint is restricted.' }, 403)
+  }
   const docId = c.req.param('docId')
   if (!DOC_ID_RE.test(docId)) return c.json({ detail: 'Invalid doc_id.' }, 400)
   return c.json(await getIndexDebugReport(docId))

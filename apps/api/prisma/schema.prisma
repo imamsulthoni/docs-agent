@@ -35,6 +35,9 @@ model Document {
   ownerId     String?
   workspaceId String?
   workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  // Bytes stored under ARTIFACT_DIR/<docId>/ (markdown, meta, extracted images).
+  // Account quota sums this per owner; guests (ownerId null) are not counted.
+  sizeBytes   Int            @default(0)
   createdAt   DateTime       @default(now())
   pages       DocumentPage[]
 

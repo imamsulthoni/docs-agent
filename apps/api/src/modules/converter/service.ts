@@ -1,11 +1,19 @@
-import { DOC_ID_RE } from "../../config.js";
+import { ACCOUNT_QUOTA_BYTES, DOC_ID_RE } from "../../config.js";
 import { getDocumentQueue } from "../../config/queue.js";
 import {
   ArtifactDiskFullError,
+  artifactBytes,
   artifactExists,
+  deleteArtifact,
   putArtifact,
   type ArtifactPayload,
 } from "../documents/artifacts.js";
+import {
+  QuotaExceededError,
+  assertWithinQuota,
+  getOwnerUsage,
+  withOwnerStorageLock,
+} from "../documents/quota.js";
 import { getDocStatus, upsertPendingDoc } from "../documents/store.js";
 import { converterClient } from "./client.js";
 import {
@@ -16,7 +24,7 @@ import {
 
 export type StoreFailure = {
   ok: false;
-  status: 507 | 502;
+  status: 413 | 507 | 502;
   detail: string;
 };
 
@@ -53,6 +61,7 @@ export async function persistConversion(input: {
 }): Promise<Stored> {
   const { payload, filename, requestId, logPrefix, ctx } = input;
   if (!payload.doc_id) return { ok: true };
+  let sizeBytes = 0;
   try {
     if (!(await artifactExists(payload.doc_id))) {
       await putArtifact({
@@ -62,6 +71,10 @@ export async function persistConversion(input: {
         workspace_id: ctx?.workspaceId ?? null,
       });
     }
+    // Measure after writing: derived files (extracted images/scans) count
+    // against the owner quota too (BRD §6.4). Measure even when the artifact
+    // already existed, otherwise a retried job could be recorded as 0 bytes.
+    sizeBytes = await artifactBytes(payload.doc_id);
   } catch (err) {
     if (err instanceof ArtifactDiskFullError) {
       return {
@@ -76,14 +89,27 @@ export async function persistConversion(input: {
     );
     return { ok: false, status: 502, detail: "Failed to store conversion result." };
   }
-  await enqueueIndexing(
+  const recorded = await enqueueIndexing(
     payload.doc_id,
     filename,
     payload.markdown_url ?? null,
     payload.stats,
     requestId,
     ctx,
+    sizeBytes,
   );
+  if (!recorded.ok) {
+    // Quota was exceeded after the artifact had already been written: roll it
+    // back so the account is not charged for a rejected document.
+    try {
+      await deleteArtifact(payload.doc_id);
+    } catch (err) {
+      console.warn(
+        `${logPrefix} quota rollback failed doc=${payload.doc_id} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { ok: false, status: 413, detail: recorded.detail };
+  }
   return { ok: true };
 }
 
@@ -95,29 +121,61 @@ export async function enqueueIndexing(
   stats: unknown,
   reqId?: string,
   ctx?: PersistContext,
-): Promise<void> {
+  sizeBytes = 0,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
   if (!DOC_ID_RE.test(docId)) {
     console.warn(
       `[index:enqueue] skipped: invalid doc_id=${docId} req=${reqId ?? "-"}`,
     );
-    return;
+    return { ok: true };
   }
   // Async jobs are polled repeatedly — don't enqueue twice.
   try {
     const existing = await getDocStatus(docId);
-    if (existing.found) return;
+    if (existing.found) return { ok: true };
   } catch {
     /* status check best-effort; fall through to upsert */
   }
   try {
-    await upsertPendingDoc({
-      docId,
-      name,
-      markdownUrl,
-      stats: stats ?? {},
-      ownerId: ctx?.ownerId ?? null,
-      workspaceId: ctx?.workspaceId ?? null,
-    });
+    const ownerId = ctx?.ownerId ?? null;
+    if (ownerId && ACCOUNT_QUOTA_BYTES > 0) {
+      const reserved = await withOwnerStorageLock(ownerId, async (tx) => {
+        const usage = await getOwnerUsage(ownerId, tx);
+        if (usage.usedBytes + sizeBytes > ACCOUNT_QUOTA_BYTES) {
+          return { ok: false as const, usedBytes: usage.usedBytes };
+        }
+        await upsertPendingDoc(
+          {
+            docId,
+            name,
+            markdownUrl,
+            stats: stats ?? {},
+            ownerId,
+            workspaceId: ctx?.workspaceId ?? null,
+            sizeBytes,
+          },
+          tx,
+        );
+        return { ok: true as const };
+      });
+      if (!reserved.ok) {
+        const detail = new QuotaExceededError(reserved.usedBytes).message;
+        console.warn(
+          `[index:enqueue] doc=${docId} quota exceeded used=${reserved.usedBytes} bytes=${sizeBytes}`,
+        );
+        return { ok: false, detail };
+      }
+    } else {
+      await upsertPendingDoc({
+        docId,
+        name,
+        markdownUrl,
+        stats: stats ?? {},
+        ownerId,
+        workspaceId: ctx?.workspaceId ?? null,
+        sizeBytes,
+      });
+    }
     console.log(
       `[index:enqueue] doc=${docId} upsert=ok markdownUrl=${markdownUrl ?? "(null)"}`,
     );
@@ -126,7 +184,7 @@ export async function enqueueIndexing(
       console.error(
         `[index:enqueue] doc=${docId} FAILED queue unavailable (REDIS_URL invalid/unreachable) — worker will never pick this up`,
       );
-      return;
+      return { ok: true };
     }
     try {
       const job = await queue.add("index", { docId, name, markdownUrl });
@@ -143,6 +201,7 @@ export async function enqueueIndexing(
       err instanceof Error ? err.stack : "",
     );
   }
+  return { ok: true };
 }
 
 export type ConvertDocumentResult =
@@ -151,7 +210,8 @@ export type ConvertDocumentResult =
   | { type: "upstream-failed" }
   | { type: "passthrough"; response: Response }
   | { type: "bad-json" }
-  | { type: "store-failed"; status: 507 | 502; detail: string }
+  | { type: "quota-exceeded"; detail: string }
+  | { type: "store-failed"; status: 413 | 507 | 502; detail: string }
   | { type: "ok"; payload: ArtifactPayload };
 
 export async function convertDocument(
@@ -165,6 +225,20 @@ export async function convertDocument(
   console.log(
     `[convert] start req=${requestId ?? "-"} file=${upload.file.name} bytes=${upload.file.size}`,
   );
+  if (persist && ctx?.ownerId) {
+    try {
+      // Cheap pre-check: fail before a multi-minute conversion. The exact
+      // folder size is re-checked after the artifact is written (persistConversion).
+      await assertWithinQuota(ctx.ownerId, upload.file.size);
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        return { type: "quota-exceeded", detail: err.message };
+      }
+      console.warn(
+        `[convert] quota pre-check unavailable req=${requestId ?? "-"} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   let res: Response;
   try {
     res = await converterClient.convertSync(
@@ -225,15 +299,29 @@ export type StartConversionResult =
   | { type: "unavailable" }
   | { type: "queue-full" }
   | { type: "upstream-failed" }
+  | { type: "quota-exceeded"; detail: string }
   | { type: "passthrough"; response: Response };
 
 export async function startConversion(
   upload: ConvertUpload,
   requestId?: string,
+  ctx?: PersistContext,
 ): Promise<StartConversionResult> {
   console.log(
     `[convert:async] start req=${requestId ?? "-"} file=${upload.file.name} bytes=${upload.file.size}`,
   );
+  if (ctx?.ownerId) {
+    try {
+      await assertWithinQuota(ctx.ownerId, upload.file.size);
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        return { type: "quota-exceeded", detail: err.message };
+      }
+      console.warn(
+        `[convert:async] quota pre-check unavailable req=${requestId ?? "-"} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   let res: Response;
   try {
     res = await converterClient.convertAsync(
@@ -260,7 +348,7 @@ export type ConversionJobResult =
   | { type: "unavailable" }
   | { type: "not-found" }
   | { type: "bad-json" }
-  | { type: "store-failed"; status: 507 | 502; detail: string }
+  | { type: "store-failed"; status: 413 | 507 | 502; detail: string }
   | { type: "ok"; job: ConversionJob };
 
 export async function getConversionJob(

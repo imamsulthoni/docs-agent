@@ -117,6 +117,12 @@ export async function isArtifactDiskFull(): Promise<boolean> {
   return used >= ARTIFACT_MAX_BYTES;
 }
 
+/** Bytes stored for one document folder (markdown + meta + images/scans). */
+export async function artifactBytes(docId: string): Promise<number> {
+  if (!DOC_ID_RE.test(docId)) return 0;
+  return directoryBytes(path.join(ARTIFACT_DIR, docId));
+}
+
 export async function artifactExists(docId: string): Promise<boolean> {
   if (!DOC_ID_RE.test(docId)) return false;
   try {

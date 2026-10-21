@@ -7,6 +7,7 @@ import {
   ATTACH_STALE_MS,
 } from "../../../config.js";
 import { containsInjectionPattern, type AttachmentContext } from "@docs-agent/agent";
+import type { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../../utils/prisma.js";
 import { convertDocument } from "../../converter/service.js";
 import { converterClient } from "../../converter/client.js";
@@ -545,11 +546,14 @@ export type NewAttachmentRow = {
   createdAt: Date;
 };
 
+type Db = Prisma.TransactionClient | typeof prisma;
+
 /** Insert the processing row; POST replies 202 with its id before work starts. */
 export async function createAttachmentRow(
   input: CreateAttachmentInput,
+  db: Db = prisma,
 ): Promise<NewAttachmentRow> {
-  const row = await prisma.chatAttachment.create({
+  const row = await db.chatAttachment.create({
     data: {
       ownerId: input.ownerId,
       docId: input.docId,

@@ -9,7 +9,14 @@ import {
   FolderIcon,
   PlusIcon,
 } from '../../components/icons'
-import { createWorkspace, listWorkspaces, type Workspace } from './api'
+import { formatStorageBytes } from '../../lib/format'
+import {
+  createWorkspace,
+  fetchStorageUsage,
+  listWorkspaces,
+  type StorageUsage,
+  type Workspace,
+} from './api'
 import { listDocuments, type DocSummary } from '../library/api'
 
 function formatDate(iso?: string): string {
@@ -190,10 +197,79 @@ function NewWorkspaceDialog({
   )
 }
 
+/** Account storage quota: used / total plus a small breakdown. */
+function StoragePanel({
+  usage,
+  failed,
+}: {
+  usage: StorageUsage | null
+  failed: boolean
+}) {
+  const { t } = useI18n()
+  const unlimited = usage !== null && usage.quotaBytes === 0
+  const percent =
+    usage && usage.quotaBytes > 0
+      ? Math.min(100, Math.round((usage.usedBytes / usage.quotaBytes) * 100))
+      : 0
+  const barTone =
+    percent >= 100 ? 'bg-danger' : percent >= 90 ? 'bg-warn' : 'bg-accent'
+  const used = formatStorageBytes(usage?.usedBytes ?? 0)
+  const total = formatStorageBytes(usage?.quotaBytes ?? 0)
+
+  return (
+    <section
+      aria-labelledby="storage-heading"
+      className="rounded-lg border border-line bg-surface px-4 py-3.5"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 id="storage-heading" className="text-sm font-semibold">
+          {t('dashboard.storage')}
+        </h2>
+        <p className="font-mono text-xs tabular-nums text-fg-soft">
+          {failed
+            ? t('dashboard.storageUnavailable')
+            : !usage
+              ? '—'
+              : unlimited
+                ? `${used} / ${t('dashboard.storageUnlimited')}`
+                : t('dashboard.storageUsage', { used, total })}
+        </p>
+      </div>
+
+      {usage && !unlimited && (
+        <div
+          role="progressbar"
+          aria-label={t('dashboard.storageAria', { used, total })}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-line"
+        >
+          <div
+            className={`h-full rounded-full transition-[width] ${barTone}`}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+
+      {usage && (
+        <p className="mt-2 font-mono text-[11px] text-fg-soft">
+          {t('dashboard.storageDocs')}{' '}
+          {formatStorageBytes(usage.documentsBytes)} ·{' '}
+          {t('dashboard.storageAttachments')}{' '}
+          {formatStorageBytes(usage.attachmentsBytes)}
+        </p>
+      )}
+    </section>
+  )
+}
+
 export function DashboardPage() {
   const { t } = useI18n()
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null)
   const [docs, setDocs] = useState<DocSummary[] | null>(null)
+  const [usage, setUsage] = useState<StorageUsage | null>(null)
+  const [usageFailed, setUsageFailed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
 
@@ -210,6 +286,18 @@ export function DashboardPage() {
 
   useEffect(() => {
     void load()
+    let cancelled = false
+    // Quota is independent: a failure here must not blank the dashboard.
+    fetchStorageUsage()
+      .then((u) => {
+        if (!cancelled) setUsage(u)
+      })
+      .catch(() => {
+        if (!cancelled) setUsageFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -262,6 +350,8 @@ export function DashboardPage() {
           </Button>
         </div>
       </header>
+
+      <StoragePanel usage={usage} failed={usageFailed} />
 
       {error && <Alert className="px-3 py-2 text-sm">{error}</Alert>}
 

@@ -29,15 +29,25 @@ export async function requireSession(): Promise<{ id: string; name: string; emai
 export interface AuthConfig {
   emailPassword: boolean
   google: boolean
+  /** True when this session may call /v1/debug (admin/dev only). */
+  debugAccess: boolean
+}
+
+const AUTH_CONFIG_FALLBACK: AuthConfig = {
+  emailPassword: true,
+  google: false,
+  debugAccess: false,
 }
 
 /** Which sign-in methods the gateway has configured (Google is optional). */
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   try {
-    const res = await fetch(`${API_URL}/v1/auth/config`)
-    if (!res.ok) return { emailPassword: true, google: false }
+    const res = await fetch(`${API_URL}/v1/auth/config`, {
+      credentials: 'include',
+    })
+    if (!res.ok) return AUTH_CONFIG_FALLBACK
     return (await res.json()) as AuthConfig
   } catch {
-    return { emailPassword: true, google: false }
+    return AUTH_CONFIG_FALLBACK
   }
 }

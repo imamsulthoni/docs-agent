@@ -2,6 +2,14 @@ import { apiFetch, errDetail } from '../../lib/api'
 import { t } from '../../lib/i18n'
 import type { DocSummary } from '../library/api'
 
+export interface StorageUsage {
+  usedBytes: number
+  /** 0 means unlimited. */
+  quotaBytes: number
+  documentsBytes: number
+  attachmentsBytes: number
+}
+
 export interface Workspace {
   id: string
   ownerId: string
@@ -13,6 +21,13 @@ export interface Workspace {
 async function asError(res: Response, fallback: string): Promise<Error> {
   const detail = await res.text().catch(() => '')
   return new Error(errDetail(detail, fallback))
+}
+
+/** Storage used by the signed-in account (dashboard quota panel). */
+export async function fetchStorageUsage(): Promise<StorageUsage> {
+  const res = await apiFetch('/v1/account/storage')
+  if (!res.ok) throw await asError(res, t('api.errStorage', { status: res.status }))
+  return (await res.json()) as StorageUsage
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
@@ -29,7 +44,8 @@ export async function getWorkspace(id: string): Promise<Workspace> {
   return body.workspace
 }
 
-export async function createWorkspace(name: string): Promise<Workspace> {  const res = await apiFetch('/v1/workspaces', {
+export async function createWorkspace(name: string): Promise<Workspace> {
+  const res = await apiFetch('/v1/workspaces', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name }),

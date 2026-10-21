@@ -55,6 +55,13 @@ const en = {
   'dashboard.recentEmptyTitle': 'No documents yet',
   'dashboard.recentEmptyHint': 'Upload a PDF inside a workspace and it shows up here.',
   'dashboard.noWorkspace': 'No workspace',
+  'dashboard.storage': 'Storage',
+  'dashboard.storageUsage': '{used} of {total}',
+  'dashboard.storageAria': 'Storage used: {used} of {total}',
+  'dashboard.storageDocs': 'Documents',
+  'dashboard.storageAttachments': 'Attachments',
+  'dashboard.storageUnavailable': 'Storage usage unavailable',
+  'dashboard.storageUnlimited': 'Unlimited',
 
   'ws.back': 'Dashboard',
   'ws.rename': 'Rename',
@@ -264,6 +271,7 @@ const en = {
   'api.errDocs': 'Could not load documents (HTTP {status}).',
   'api.errWorkspaces': 'Workspace request failed (HTTP {status}).',
   'api.errDeleteDoc': 'Could not delete document (HTTP {status}).',
+  'api.errStorage': 'Could not load storage usage (HTTP {status}).',
   'api.errMarkdown': 'Markdown not found or expired.',
 } as const
 
@@ -320,6 +328,13 @@ const id: Record<StringKey, string> = {
   'dashboard.recentEmptyTitle': 'Belum ada dokumen',
   'dashboard.recentEmptyHint': 'Unggah PDF di dalam workspace dan dokumennya akan muncul di sini.',
   'dashboard.noWorkspace': 'Tanpa workspace',
+  'dashboard.storage': 'Penyimpanan',
+  'dashboard.storageUsage': '{used} dari {total}',
+  'dashboard.storageAria': 'Penyimpanan terpakai: {used} dari {total}',
+  'dashboard.storageDocs': 'Dokumen',
+  'dashboard.storageAttachments': 'Lampiran',
+  'dashboard.storageUnavailable': 'Pemakaian penyimpanan tidak tersedia',
+  'dashboard.storageUnlimited': 'Tanpa batas',
 
   'ws.back': 'Dashboard',
   'ws.rename': 'Ganti nama',
@@ -529,6 +544,7 @@ const id: Record<StringKey, string> = {
   'api.errDocs': 'Tidak dapat memuat dokumen (HTTP {status}).',
   'api.errWorkspaces': 'Permintaan workspace gagal (HTTP {status}).',
   'api.errDeleteDoc': 'Tidak dapat menghapus dokumen (HTTP {status}).',
+  'api.errStorage': 'Gagal memuat pemakaian penyimpanan (HTTP {status}).',
   'api.errMarkdown': 'Markdown tidak ditemukan atau kedaluwarsa.',
 }
 
