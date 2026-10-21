@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Message, useMessage, useMessagePart } from '@anvia/react-ui'
 import type { UIMessage } from '@anvia/react'
+import { Message, useMessage, useMessagePart } from '@anvia/react-ui'
 import { useI18n } from '../../lib/i18n'
 import { CheckIcon, CopyIcon, FileIcon, WrenchIcon } from '../../components/icons'
 import { chatMarkdownComponents } from './markdown'
@@ -117,6 +118,234 @@ export function MessageMentions() {
           </span>
         ),
       )}
+    </div>
+  )
+}
+
+import { formatCostUsd, formatTokens } from './usage'
+
+/** Token/cost footer under one assistant message (metadata from message_end). */
+export function MessageUsage() {
+  const { message } = useMessage()
+  if (message.role !== 'assistant') return null
+  const meta = message.metadata as
+    | {
+        usage?: { inputTokens?: number; outputTokens?: number }
+      }
+    | undefined
+  const input =
+    typeof meta?.usage?.inputTokens === 'number' ? meta.usage.inputTokens : 0
+  const output =
+    typeof meta?.usage?.outputTokens === 'number' ? meta.usage.outputTokens : 0
+  if (input === 0 && output === 0) return null
+  return (
+    <p className="mt-1.5 font-mono text-[11px] text-fg-faint">
+      {formatTokens(input)} in / {formatTokens(output)} out
+    </p>
+  )
+}
+
+/** Session total cost badge (accumulated by DocChat from stream metadata). */
+export function SessionCostBadge({
+  totalTokens,
+  costUsd,
+}: {
+  totalTokens: number
+  costUsd: number
+}) {
+  const { t } = useI18n()
+  if (totalTokens <= 0) return null
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-fg-soft"
+      title={t('chat.sessionTokens', { total: formatTokens(totalTokens) })}
+    >
+      Σ {formatTokens(totalTokens)} · {formatCostUsd(costUsd)}
+    </span>
+  )
+}
+
+/** Per-session chat model picker (custom dropdown, mirrors session select). */
+export function ModelPicker({
+  options,
+  value,
+  onChange,
+  disabled,
+}: {
+  options: { id: string; label: string; free: boolean }[]
+  value: string | null
+  onChange: (id: string | null) => void
+  disabled: boolean
+}) {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 256 })
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const active = options.find((o) => o.id === value) ?? null
+
+  // Portal the menu to <body> so no overflow-hidden ancestor can clip it.
+  // Re-anchor on open/resize/scroll (capture) so it tracks the button.
+  useLayoutEffect(() => {
+    if (!open) return
+    function anchor() {
+      const r = btnRef.current?.getBoundingClientRect()
+      if (!r) return
+      const width = Math.max(256, Math.min(320, r.width + 64))
+      setMenuPos({
+        top: r.bottom + 4,
+        // Open rightward: align menu's left edge with the button.
+        left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)),
+        width,
+      })
+    }
+    anchor()
+    window.addEventListener('resize', anchor)
+    window.addEventListener('scroll', anchor, true)
+    return () => {
+      window.removeEventListener('resize', anchor)
+      window.removeEventListener('scroll', anchor, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(e: PointerEvent) {
+      if (
+        btnRef.current &&
+        !btnRef.current.contains(e.target as Node) &&
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node)
+      )
+        setOpen(false)
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        btnRef.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
+
+  function choose(id: string | null) {
+    onChange(id)
+    setOpen(false)
+    btnRef.current?.focus()
+  }
+
+  function moveFocus(dir: 1 | -1) {
+    const items = menuRef.current?.querySelectorAll<HTMLButtonElement>(
+      '[role="menuitemradio"]',
+    )
+    if (!items || items.length === 0) return
+    const cur = Array.from(items).indexOf(
+      document.activeElement as HTMLButtonElement,
+    )
+    const next = (cur + dir + items.length) % items.length
+    items[next]?.focus()
+  }
+
+  return (
+    <div className="min-w-0">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault()
+            if (!open) {
+              setOpen(true)
+              window.setTimeout(() => moveFocus(1), 0)
+            } else {
+              moveFocus(e.key === 'ArrowDown' ? 1 : -1)
+            }
+          }
+        }}
+        disabled={disabled || options.length === 0}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t('chat.modelPicker')}
+        title={active ? active.id : undefined}
+        className="flex max-w-56 items-center justify-between gap-2 rounded-md border border-line bg-bg px-2.5 py-1.5 text-xs transition-colors hover:border-line-strong disabled:opacity-50"
+      >
+        <span className="truncate text-fg">
+          {active
+            ? `${active.label}${active.free ? ' · free' : ''}`
+            : t('chat.modelDefault')}
+        </span>
+        <span
+          aria-hidden
+          className={`shrink-0 text-fg-faint transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          ▾
+        </span>
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label={t('chat.modelPicker')}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault()
+                moveFocus(1)
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault()
+                moveFocus(-1)
+              }
+            }}
+            className="fixed z-[100] max-h-64 overflow-y-auto rounded-md border border-line-strong bg-surface py-1 shadow-lg"
+            style={{
+              top: menuPos.top,
+              left: menuPos.left,
+              width: menuPos.width,
+            }}
+          >
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={value === null}
+              onClick={() => choose(null)}
+              className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 ${
+                value === null ? 'text-fg' : 'text-fg-soft'
+              }`}
+            >
+              <span className="truncate">{t('chat.modelDefault')}</span>
+              {value === null && <CheckIcon />}
+            </button>
+            {options.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={m.id === value}
+                onClick={() => choose(m.id)}
+                title={m.id}
+                className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 ${
+                  m.id === value ? 'text-fg' : 'text-fg-soft'
+                }`}
+              >
+                <span className="truncate">
+                  {m.free ? `${m.label} · free` : m.label}
+                </span>
+                {m.id === value && <CheckIcon />}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

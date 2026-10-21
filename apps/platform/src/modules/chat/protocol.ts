@@ -40,13 +40,40 @@ function runningToolPart(
   }
 }
 
+/** Latest live assistant message id (for attaching usage metadata). */
+let pendingAssistantId: string | null = null
+
 /** Fold one client-protocol event into a UI event (run/turn frames and data need no UI). */
 export function clientEventToUIEvent(
   event: ClientStreamEvent<ClientMetadata>,
   toolInputs: Map<string, string>,
 ): UIStreamEvent | undefined {
   switch (event.type) {
+    // turn_end/run_end carry usage inside `metadata` (model + tokens).
+    // Forward to `message_end` (which owns the message metadata slot) so
+    // `MessageUsage` and the session badge can read it off the stream message.
+    case 'turn_end':
+    case 'run_end': {
+      const meta = (
+        event as unknown as { metadata?: { usage?: unknown; modelId?: unknown } }
+      ).metadata
+      if (!meta?.usage) return undefined
+      const u = meta.usage as Record<string, unknown>
+      const inputTokens = typeof u.inputTokens === 'number' ? u.inputTokens : 0
+      const outputTokens =
+        typeof u.outputTokens === 'number' ? u.outputTokens : 0
+      if (inputTokens === 0 && outputTokens === 0) return undefined
+      return {
+        type: 'message_end',
+        messageId: pendingAssistantId ?? '',
+        metadata: {
+          usage: { inputTokens, outputTokens },
+          modelId: typeof meta.modelId === 'string' ? meta.modelId : '',
+        },
+      }
+    }
     case 'text_delta':
+      pendingAssistantId = event.messageId
       return {
         type: 'text_delta',
         messageId: event.messageId,

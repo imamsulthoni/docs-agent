@@ -12,7 +12,6 @@ import {
   ATTACH_FOLLOWUP_TOTAL_MAX_CHARS,
   ATTACH_INJECT_MAX_CHARS,
   ATTACH_TOTAL_MAX_CHARS,
-  CHAT_MODEL,
   CHAT_HISTORY_TURNS,
   CHAT_MAX_TURNS,
   OPENAI_API_KEY,
@@ -22,6 +21,7 @@ import {
   RETRIEVAL_TOP_K_MENTION,
   hasChatModel,
 } from "../../config.js";
+import { resolveChatModel } from "./models.js";
 import {
   LeanHistoryStore,
   extractQuestion,
@@ -74,6 +74,22 @@ export type ToolCallInfo = {
   input?: string;
   output?: string;
 };
+
+/**
+ * Narrowing for helper markers the route swallows before agentToClientStream.
+ * (Typed against the agent event union so unmapped cases fail the build.)
+ */
+export type AgentMarkerType = "citations" | "tool" | "done";
+
+const AGENT_MARKERS: ReadonlySet<string> = new Set<string>([
+  "citations",
+  "tool",
+  "done",
+]);
+
+export function isAgentMarker(type: string): type is AgentMarkerType {
+  return AGENT_MARKERS.has(type);
+}
 
 export type ChatStreamEvent =
   | { type: "text_delta"; delta: string }
@@ -665,12 +681,13 @@ async function buildAgent(
   docId: string,
   summary: string | null,
   documents: RetrievalDoc[],
-  mentions: MentionSnapshot[],
+  mentions: MentionSnapshot[] = [],
   attachmentIds: string[] = [],
   attachmentSearch?: (query: string) => Promise<AttachmentSearchHit[]>,
+  modelId?: string,
 ) {
   const model = getClient().completionModel({
-    modelId: CHAT_MODEL,
+    modelId: resolveChatModel(modelId),
     api: "chat",
   });
   const tools = await createToolsForDocuments(documents);
@@ -763,7 +780,9 @@ export async function prepareAnswer(
   activeDocumentName = "",
   attachments: ReadyAttachment[] = [],
   scope: ChatScope,
+  modelId?: string,
 ) {
+  const resolvedModelId = resolveChatModel(modelId);
   const documents: RetrievalDoc[] = [
     { docId, documentName: activeDocumentName || docId, active: true },
     ...mentions.map((m) => ({
@@ -783,6 +802,7 @@ export async function prepareAnswer(
     mentions,
     attachments.map((a) => a.id),
     attachmentTurn.search,
+    resolvedModelId,
   );
   return {
     pages,
@@ -793,6 +813,7 @@ export async function prepareAnswer(
       attachmentTurn.catalog,
     ),
     agent,
+    modelId: resolvedModelId,
   };
 }
 
@@ -806,6 +827,7 @@ export async function* streamAgentAnswer(
   mentions: MentionSnapshot[] = [],
   activeDocumentName = "",
   attachments: ReadyAttachment[] = [],
+  modelId?: string,
 ) {
   const { prompt, agent } = await prepareAnswer(
     docId,
@@ -815,6 +837,7 @@ export async function* streamAgentAnswer(
     activeDocumentName,
     attachments,
     { sessionId, userId },
+    modelId,
   );
   yield* agent.stream({
     prompt,
@@ -832,6 +855,7 @@ export async function* streamAnswer(
   mentions: MentionSnapshot[] = [],
   activeDocumentName = "",
   attachments: ReadyAttachment[] = [],
+  modelId?: string,
 ): AsyncGenerator<ChatStreamEvent> {
   const { pages, prompt, agent } = await prepareAnswer(
     docId,
@@ -841,6 +865,7 @@ export async function* streamAnswer(
     activeDocumentName,
     attachments,
     { sessionId, userId },
+    modelId,
   );
   yield { type: "citations", citations: toCitations(pages) };
 

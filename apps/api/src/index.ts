@@ -37,9 +37,11 @@ app.use(
       // Cross-workspace mentions travel as a header so the Anvia request
       // envelope stays untouched (BRD §6.5); the browser preflights it.
       "x-chat-mentions",
-      // Attachment ids for the current message — same out-of-envelope channel.
-      "x-chat-attachments",
-    ],
+    // Attachment ids for the current message — same out-of-envelope channel.
+    "x-chat-attachments",
+    // Per-session model choice for chat (validated against the allowlist).
+    "x-chat-model",
+  ],
     // Browser JS can only read safelisted response headers — the Anvia client
     // transport validates this one, so it must be visible to the platform.
     exposeHeaders: ["x-anvia-stream-protocol"],

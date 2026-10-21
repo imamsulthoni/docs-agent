@@ -6,11 +6,14 @@ import { ATTACHMENTS_HEADER, MENTIONS_HEADER, sessionUserId } from "../../config
 import { loadSession, type AuthVariables } from "../auth/middleware.js";
 import { chatRateLimit } from "../../middleware/rateLimit.js";
 import { isDocAccessible } from "../documents/access.js";
+import { getModelCatalog } from "./pricing.js";
+import { chatModelAllowlist, resolveChatModel } from "./models.js";
 import { getDocStatus } from "../documents/store.js";
 import type { MentionSnapshot } from "./history-store.js";
 import {
   clearHistory,
   getDocumentName,
+  isAgentMarker,
   loadUiHistory,
   resolveMentions,
   streamAgentAnswer,
@@ -96,8 +99,9 @@ chatRoutes.post("/chat/:docId/:sessionId", chatRateLimit, async (c) => {
     return c.json({ detail: "Not found." }, 404);
   }
 
-  const parsed = parseChatQuestion(await c.req.json().catch(() => null));
-  if (!parsed.ok) return c.json({ detail: parsed.detail }, parsed.status);
+  const parsedQuestion = parseChatQuestion(await c.req.json().catch(() => null));
+  if (!parsedQuestion.ok)
+    return c.json({ detail: parsedQuestion.detail }, parsedQuestion.status);
 
   const parsedMentions = parseMentionHeader(
     c.req.header(MENTIONS_HEADER),
@@ -146,19 +150,34 @@ chatRoutes.post("/chat/:docId/:sessionId", chatRateLimit, async (c) => {
   }
 
   const activeDocumentName = await getDocumentName(scope.docId);
+  const modelId = resolveChatModel(c.req.header("x-chat-model"));
 
+  // streamAgentAnswer yields raw agent events (turn_end carries usage) plus
+  // our own citations/tool helper markers and the terminal done/error events.
+  // Markers + error terminal are swallowed: citations persist via
+  // memory/history, tools already stream from their real agent events.
   return createClientStreamResponse({
     events: agentToClientStream({
-      events: streamAgentAnswer(
-        scope.docId,
-        scope.sessionId,
-        scope.userId,
-        parsed.question,
-        status.summary,
-        mentions,
-        activeDocumentName,
-        attachments,
-      ),
+      events: (async function* () {
+        for await (const event of streamAgentAnswer(
+          scope.docId,
+          scope.sessionId,
+          scope.userId,
+          parsedQuestion.question,
+          status.summary,
+          mentions,
+          activeDocumentName,
+          attachments,
+          modelId,
+        )) {
+          // Terminal error is mapped separately (see mapError below).
+          if ("type" in event && isAgentMarker(event.type as string)) {
+            continue;
+          }
+          yield event;
+        }
+      })(),
+      metadata: { modelId },
       mapError: (error) => {
         console.error(
           `[chat:answer] doc=${scope.docId} session=${scope.sessionId} stream error`,
@@ -170,6 +189,13 @@ chatRoutes.post("/chat/:docId/:sessionId", chatRateLimit, async (c) => {
     format: "jsonl",
     headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
   });
+});
+
+/** Cheap-model catalog for the platform picker (GET /v1/models). */
+chatRoutes.get("/models", async (c) => {
+  const models = await getModelCatalog();
+  c.header("cache-control", "public, max-age=300");
+  return c.json({ models, allowlist: chatModelAllowlist() });
 });
 
 export { chatRoutes };

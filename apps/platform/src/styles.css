@@ -277,11 +277,13 @@ body {
   margin-bottom: 0;
 }
 
-.chat-md figure {
+.chat-md figure,
+.chat-md .chat-img {
+  display: block;
   margin: 0.75rem 0;
 }
 
-.chat-md img {
+.chat-md .chat-img img {
   display: block;
   max-width: 100%;
   height: auto;
@@ -292,7 +294,8 @@ body {
   background: #fff;
 }
 
-.chat-md figcaption {
+.chat-md .chat-img-cap {
+  display: block;
   text-align: center;
   font-size: 0.75rem;
   color: var(--color-fg-soft);

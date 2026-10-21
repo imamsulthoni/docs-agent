@@ -44,6 +44,28 @@ export interface DocStatus {
   summary: string | null
 }
 
+export interface ChatModelInfo {
+  id: string
+  label: string
+  promptPerM: number
+  completionPerM: number
+  free: boolean
+}
+
+export interface ModelCatalog {
+  models: ChatModelInfo[]
+  allowlist: string[]
+}
+
+/** Cheap-model catalog with $/1M-token prices (live-refreshed server-side). */
+export async function fetchModelCatalog(
+  signal?: AbortSignal,
+): Promise<ModelCatalog> {
+  const res = await fetch(`${API_URL}/v1/models`, { signal })
+  if (!res.ok) throw new Error(`Could not load models (HTTP ${res.status}).`)
+  return (await res.json()) as ModelCatalog
+}
+
 export async function fetchStatus(docId: string): Promise<DocStatus> {
   const res = await fetch(`${API_URL}/v1/status/${docId}`)
   if (!res.ok) throw new Error(`Could not load status (HTTP ${res.status}).`)

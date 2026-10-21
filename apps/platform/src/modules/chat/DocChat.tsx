@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   useChat,
   useSmoothStreamText,
@@ -39,6 +39,8 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MENTIONS_PER_MESSAGE,
   fetchMentionableDocuments,
+  fetchModelCatalog,
+  type ChatModelInfo,
   type MentionableDocument,
 } from './api'
 import {
@@ -51,9 +53,17 @@ import {
   CopyMessage,
   MessageMentions,
   MessageAttachments,
+  MessageUsage,
+  SessionCostBadge,
+  ModelPicker,
   type UiAttachment,
   type UiMention,
 } from './message'
+import {
+  estimateTurnCost,
+  turnTotal,
+  type TurnUsage,
+} from './usage'
 import { ScrollToBottom } from './ScrollToBottom'
 
 /** Entity payload attached by the `@` trigger. */
@@ -138,6 +148,100 @@ export function DocChat({
   // Ready attachment ids for the request currently being sent.
   const attachmentsRef = useRef<string[]>([])
 
+  // Token/cost tracking per user decision: footer per message + session badge.
+  // Stream metadata only lands on the message on `message_end` (see
+  // `protocol.ts`). `chat.messages` identity changes every streamed delta, so
+  // the tick below converges the totals right after usage frames arrive.
+  const [messagesTick, setMessagesTick] = useState(0)
+  const messagesRef = useRef<UIMessage[]>([])
+
+  const turnUsages = useMemo<TurnUsage[]>(() => {
+    void messagesTick
+    const turns: TurnUsage[] = []
+    for (const message of messagesRef.current) {
+      if (message.role !== 'assistant') continue
+      const meta = message.metadata as
+        | {
+            usage?: { inputTokens?: number; outputTokens?: number }
+            modelId?: string
+          }
+        | undefined
+      const inputTokens =
+        typeof meta?.usage?.inputTokens === 'number'
+          ? meta.usage.inputTokens
+          : 0
+      const outputTokens =
+        typeof meta?.usage?.outputTokens === 'number'
+          ? meta.usage.outputTokens
+          : 0
+      if (inputTokens === 0 && outputTokens === 0) continue
+      turns.push({
+        inputTokens,
+        outputTokens,
+        modelId: typeof meta?.modelId === 'string' ? meta.modelId : '',
+      })
+    }
+    return turns
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesTick])
+  // Model catalog (cheap OpenRouter models + prices) for the picker.
+  const [catalog, setCatalog] = useState<ChatModelInfo[]>([])
+  const [modelId, setModelId] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem(`chat-model:${sessionId}`)
+    } catch {
+      return null
+    }
+  })
+  useEffect(() => {
+    let cancelled = false
+    fetchModelCatalog()
+      .then((c) => {
+        if (cancelled) return
+        setCatalog(c.models)
+        // Drop a stale persisted choice that is no longer offered.
+        setModelId((prev) => {
+          if (!prev) return prev
+          if (c.models.some((m) => m.id === prev)) return prev
+          if (c.allowlist.includes(prev)) return prev
+          try {
+            window.localStorage.removeItem(`chat-model:${sessionId}`)
+          } catch {
+            /* storage blocked — ignore */
+          }
+          return null
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([])
+      })
+    return () => {
+      cancelled = true
+    }
+    // Session-scoped: revalidate when the session changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+  const priceOf = useMemo(() => {
+    const map = new Map(
+      catalog.map((m) => [m.id, { prompt: m.promptPerM, completion: m.completionPerM }]),
+    )
+    return (id: string) => map.get(id) ?? { prompt: 0, completion: 0 }
+  }, [catalog])
+  useEffect(() => {
+    try {
+      if (modelId) window.localStorage.setItem(`chat-model:${sessionId}`, modelId)
+      else window.localStorage.removeItem(`chat-model:${sessionId}`)
+    } catch {
+      /* storage blocked — selection still applies for this session */
+    }
+  }, [modelId, sessionId])
+
+  // Model for the request currently being sent (read by the transport).
+  const modelRef = useRef<string | null>(null)
+  useEffect(() => {
+    modelRef.current = modelId
+  }, [modelId])
+
   // Mentions are an account feature and only reference workspace documents.
   const canMention = Boolean(session?.user) && Boolean(workspaceId)
   // Attachments are an account feature too (guests get HTTP 403 server-side).
@@ -195,6 +299,8 @@ export function DocChat({
         ...(attachmentsRef.current.length > 0
           ? { 'x-chat-attachments': attachmentsRef.current.join(',') }
           : {}),
+        // Per-session model choice (server validates against the allowlist).
+        ...(modelRef.current ? { 'x-chat-model': modelRef.current } : {}),
       }),
       body: ({ request }) => JSON.stringify(request),
       // Session cookie: the server scopes memory to `u:<id>` when logged in.
@@ -227,9 +333,40 @@ export function DocChat({
       clientEventToUIEvent(event, toolInputsRef.current),
     onEvent: (event) => {
       if (event.type === 'error') setStreamError(event.error.message)
+      // Refresh totals when usage-carrying frames arrive (message_end writes
+      // metadata onto the message, so totals follow the next render anyway).
+      if (
+        event.type === 'message_end' ||
+        event.type === 'turn_end' ||
+        event.type === 'run_end'
+      ) {
+        setMessagesTick((n) => n + 1)
+      }
     },
     onError: (err) => console.debug('[chat] transport error', err),
   })
+
+  const sessionTotals = useMemo(() => {
+    let inputTokens = 0
+    let outputTokens = 0
+    let totalTokens = 0
+    let costUsd = 0
+    for (const turn of turnUsages) {
+      inputTokens += turn.inputTokens
+      outputTokens += turn.outputTokens
+      totalTokens += turnTotal(turn)
+      const price = priceOf(turn.modelId)
+      costUsd += estimateTurnCost(turn, price.prompt, price.completion)
+    }
+    return { inputTokens, outputTokens, totalTokens, costUsd }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnUsages])
+
+  // Snapshot the live messages for the totals memo above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    messagesRef.current = chat.messages
+  }, [chat.messages])
 
   function beginTurn() {
     setStreamError(null)
@@ -265,9 +402,44 @@ export function DocChat({
 
   const unavailable = indexing || gone
 
+  // Picker options: catalog models + env CHAT_MODEL (default) so the
+  // request-time model is always selectable even before live prices arrive.
+  // `modelId` is the explicit choice; null means "server default" (no header).
+  const modelOptions = useMemo(() => {
+    const seen = new Set(catalog.map((m) => m.id))
+    const envList: string[] =
+      typeof import.meta.env.VITE_CHAT_MODEL === 'string' &&
+      import.meta.env.VITE_CHAT_MODEL.length > 0
+        ? [import.meta.env.VITE_CHAT_MODEL as string]
+        : []
+    const extras = envList.filter((id) => !seen.has(id))
+    return [
+      ...extras.map((id) => ({
+        id,
+        label: id,
+        promptPerM: 0,
+        completionPerM: 0,
+        free: false,
+      })),
+      ...catalog,
+    ]
+  }, [catalog])
+
   return (
     <ChatProvider controller={chat}>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="flex shrink-0 items-center justify-between gap-2">
+          <SessionCostBadge
+            totalTokens={sessionTotals.totalTokens}
+            costUsd={sessionTotals.costUsd}
+          />
+          <ModelPicker
+            options={modelOptions}
+            value={modelId}
+            onChange={setModelId}
+            disabled={indexing || gone || modelOptions.length === 0}
+          />
+        </div>
         <Thread.Root className="relative flex min-h-0 flex-1 flex-col">
           <Thread.Viewport
             autoScroll
@@ -331,11 +503,14 @@ export function DocChat({
                     <Message.Content>
                       <Message.Parts>
                         {() => (
-                          <MessagePart
-                            role={message.role}
-                            smoothedText={smoothing ? smooth.text : undefined}
-                            firstTextId={firstTextId}
-                          />
+                          <>
+                            <MessagePart
+                              role={message.role}
+                              smoothedText={smoothing ? smooth.text : undefined}
+                              firstTextId={firstTextId}
+                            />
+                            <MessageUsage />
+                          </>
                         )}
                       </Message.Parts>
                     </Message.Content>

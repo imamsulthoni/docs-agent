@@ -2,17 +2,23 @@ import { isValidElement, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import { mediaUrl } from '../../lib/api'
 
-/** Image renderer shared by streaming ReactMarkdown and Message.Markdown. */
+/**
+ * Image renderer shared by streaming ReactMarkdown and Message.Markdown.
+ * Plain inline span (not <figure>): react-markdown always nests <img> inside
+ * <p>, so a block-level figure here triggers the <figure>-in-<p> hydration
+ * error console users keep seeing. A span is valid in every nesting position
+ * and the .chat-md CSS below keeps the figure-like look.
+ */
 export const ChatImage: Components['img'] = ({ src, alt }) => (
-  <figure>
+  <span className="chat-img">
     {/* eslint-disable-next-line jsx-a11y/alt-text */}
     <img
       src={typeof src === 'string' ? mediaUrl(src) : src}
       alt={alt ?? ''}
       loading="lazy"
     />
-    {alt ? <figcaption>{alt}</figcaption> : null}
-  </figure>
+    {alt ? <span className="chat-img-cap">{alt}</span> : null}
+  </span>
 )
 
 function isImageOnly(children: ReactNode): boolean {
@@ -27,9 +33,13 @@ function isImageOnly(children: ReactNode): boolean {
   )
 }
 
-/** Keep figure-wrapped images valid outside <p>. */
+/**
+ * Components for assistant markdown. `img` maps to ChatImage (inline span, so
+ * it stays valid inside <p>); `p` renders bare content unwrapped to keep
+ * <figure>-in-<p> impossible while plain-text paragraphs keep their <p>.
+ */
 export const chatMarkdownComponents: Components = {
   img: ChatImage,
   p: ({ children }) =>
-    isImageOnly(children) ? <div>{children}</div> : <p>{children}</p>,
+    isImageOnly(children) ? <>{children}</> : <p>{children}</p>,
 }
