@@ -50,6 +50,10 @@ export interface ChatModelInfo {
   promptPerM: number
   completionPerM: number
   free: boolean
+  /** Reasoning-capable (thinking) model. */
+  reasoning?: boolean
+  /** Provider context window in tokens, when known. */
+  contextWindow?: number
 }
 
 export interface ModelCatalog {

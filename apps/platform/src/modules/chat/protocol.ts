@@ -43,34 +43,52 @@ function runningToolPart(
 /** Latest live assistant message id (for attaching usage metadata). */
 let pendingAssistantId: string | null = null
 
+type RawUsageFrame = {
+  usage?: { inputTokens?: unknown; outputTokens?: unknown }
+  metadata?: { modelId?: unknown }
+}
+
+/**
+ * Usage frames from @anvia/client carry `usage` at the TOP level — both on
+ * `message_end` itself and on `turn_end`/`run_end` (their `metadata` only
+ * holds request settings like `modelId`). The @anvia/react hook copies a
+ * `message_end` frame's `metadata` onto the message with that id, so rebuild
+ * every usage frame into that shape. Without usage the frame is a no-op:
+ * re-emitting metadata-only would replace (not merge) a message's usage.
+ */
+function usageEndFrame(
+  event: RawUsageFrame,
+  messageId: string,
+): UIStreamEvent | undefined {
+  if (messageId === '') return undefined
+  const u = event.usage
+  const inputTokens = typeof u?.inputTokens === 'number' ? u.inputTokens : 0
+  const outputTokens = typeof u?.outputTokens === 'number' ? u.outputTokens : 0
+  if (inputTokens === 0 && outputTokens === 0) return undefined
+  const modelId =
+    typeof event.metadata?.modelId === 'string' ? event.metadata.modelId : ''
+  return {
+    type: 'message_end',
+    messageId,
+    metadata: {
+      usage: { inputTokens, outputTokens },
+      ...(modelId ? { modelId } : {}),
+    },
+  }
+}
+
 /** Fold one client-protocol event into a UI event (run/turn frames and data need no UI). */
 export function clientEventToUIEvent(
   event: ClientStreamEvent<ClientMetadata>,
   toolInputs: Map<string, string>,
 ): UIStreamEvent | undefined {
   switch (event.type) {
-    // turn_end/run_end carry usage inside `metadata` (model + tokens).
-    // Forward to `message_end` (which owns the message metadata slot) so
-    // `MessageUsage` and the session badge can read it off the stream message.
+    // Per-turn `message_end` already carries the same usage at the top
+    // level — track its id and forward the usage through the metadata slot.
     case 'turn_end':
     case 'run_end': {
-      const meta = (
-        event as unknown as { metadata?: { usage?: unknown; modelId?: unknown } }
-      ).metadata
-      if (!meta?.usage) return undefined
-      const u = meta.usage as Record<string, unknown>
-      const inputTokens = typeof u.inputTokens === 'number' ? u.inputTokens : 0
-      const outputTokens =
-        typeof u.outputTokens === 'number' ? u.outputTokens : 0
-      if (inputTokens === 0 && outputTokens === 0) return undefined
-      return {
-        type: 'message_end',
-        messageId: pendingAssistantId ?? '',
-        metadata: {
-          usage: { inputTokens, outputTokens },
-          modelId: typeof meta.modelId === 'string' ? meta.modelId : '',
-        },
-      }
+      const e = event as unknown as RawUsageFrame
+      return usageEndFrame(e, pendingAssistantId ?? '')
     }
     case 'text_delta':
       pendingAssistantId = event.messageId
@@ -150,8 +168,11 @@ export function clientEventToUIEvent(
               },
       }
     }
-    case 'message_end':
-      return { type: 'message_end', messageId: event.messageId }
+    case 'message_end': {
+      const e = event as unknown as RawUsageFrame & { messageId: string }
+      pendingAssistantId = e.messageId
+      return usageEndFrame(e, e.messageId) ?? { type: 'message_end', messageId: e.messageId }
+    }
     default:
       return undefined
   }

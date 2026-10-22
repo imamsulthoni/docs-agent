@@ -18,6 +18,8 @@ export interface ChatModelOption {
   /** $ per 1M completion tokens (fallback). */
   completionPerM: number;
   free?: boolean;
+  /** Reasoning-capable (thinking) model, used when live data is unavailable. */
+  reasoning?: boolean;
 }
 
 export const CHEAP_CHAT_MODELS: ChatModelOption[] = [
@@ -32,6 +34,7 @@ export const CHEAP_CHAT_MODELS: ChatModelOption[] = [
     label: "Gemini 2.5 Flash",
     promptPerM: 0.3,
     completionPerM: 2.5,
+    reasoning: true,
   },
   {
     id: "meta-llama/llama-3.3-70b-instruct",

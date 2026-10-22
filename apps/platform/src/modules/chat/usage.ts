@@ -1,10 +1,11 @@
 /**
  * Client-side token/cost display state for the chat panel.
  *
- * Server merges usage into per-turn `turn_end`/`run_end` metadata. The hook
- * only copies `message_end.metadata` onto messages, so `protocol.ts` turns
- * usage events into transient `data` parts consumed by `MessageUsage` below.
- * Per-part totals are derived from the live `chat.messages` state.
+ * @anvia/client carries usage at the TOP level of `turn_end`/`run_end`/`
+ * message_end` frames; `protocol.ts` rebuilds those frames into `message_end`
+ * events whose `metadata` the hook copies onto the message, where
+ * `MessageUsage` and the session badge read it from. Per-part totals are
+ * derived from the live `chat.messages` state.
  */
 export interface TurnUsage {
   inputTokens: number;
@@ -39,6 +40,18 @@ export function formatCostUsd(cost: number): string {
   if (cost === 0) return "$0";
   if (cost < 0.01) return `$${cost.toFixed(4)}`;
   return `$${cost.toFixed(2)}`;
+}
+
+/** Compact context-window size (e.g. 128000 → "128k"). */
+export function formatContextTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return formatTokens(n);
+}
+
+/** $/1M-token price label (e.g. "$0.15"). */
+export function formatPerMPrice(perM: number): string {
+  if (!Number.isFinite(perM) || perM < 0) return "—";
+  return `$${perM.toFixed(2)}`;
 }
 
 /**

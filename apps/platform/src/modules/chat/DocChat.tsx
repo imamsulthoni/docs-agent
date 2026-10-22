@@ -347,6 +347,13 @@ export function DocChat({
   })
 
   const sessionTotals = useMemo(() => {
+    // Only `run_end` carries the modelId (bridged onto the last message), so
+    // multi-turn costs price earlier turns with the session's chosen/default
+    // model as a fallback.
+    const envModelId = import.meta.env.VITE_CHAT_MODEL
+    const fallbackModelId =
+      modelId ??
+      (typeof envModelId === "string" && envModelId.length > 0 ? envModelId : "")
     let inputTokens = 0
     let outputTokens = 0
     let totalTokens = 0
@@ -355,12 +362,11 @@ export function DocChat({
       inputTokens += turn.inputTokens
       outputTokens += turn.outputTokens
       totalTokens += turnTotal(turn)
-      const price = priceOf(turn.modelId)
+      const price = priceOf(turn.modelId || fallbackModelId)
       costUsd += estimateTurnCost(turn, price.prompt, price.completion)
     }
     return { inputTokens, outputTokens, totalTokens, costUsd }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turnUsages])
+  }, [turnUsages, modelId, priceOf])
 
   // Snapshot the live messages for the totals memo above.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -428,18 +434,6 @@ export function DocChat({
   return (
     <ChatProvider controller={chat}>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
-        <div className="flex shrink-0 items-center justify-between gap-2">
-          <SessionCostBadge
-            totalTokens={sessionTotals.totalTokens}
-            costUsd={sessionTotals.costUsd}
-          />
-          <ModelPicker
-            options={modelOptions}
-            value={modelId}
-            onChange={setModelId}
-            disabled={indexing || gone || modelOptions.length === 0}
-          />
-        </div>
         <Thread.Root className="relative flex min-h-0 flex-1 flex-col">
           <Thread.Viewport
             autoScroll
@@ -549,6 +543,21 @@ export function DocChat({
           </p>
         ) : (
           <>
+            {/* Model + session usage sit with the composer: the picker writes
+                into the next message and the badge reflects the session so
+                both are visible exactly when the user decides to send. */}
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <ModelPicker
+                options={modelOptions}
+                value={modelId}
+                onChange={setModelId}
+                disabled={indexing || gone || modelOptions.length === 0}
+              />
+              <SessionCostBadge
+                totalTokens={sessionTotals.totalTokens}
+                costUsd={sessionTotals.costUsd}
+              />
+            </div>
             {canAttach && (
               <AttachmentTray
                 items={tray.items}

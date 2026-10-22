@@ -122,7 +122,12 @@ export function MessageMentions() {
   )
 }
 
-import { formatCostUsd, formatTokens } from './usage'
+import {
+  formatContextTokens,
+  formatCostUsd,
+  formatPerMPrice,
+  formatTokens,
+} from './usage'
 
 /** Token/cost footer under one assistant message (metadata from message_end). */
 export function MessageUsage() {
@@ -165,6 +170,17 @@ export function SessionCostBadge({
   )
 }
 
+/** One model option in the picker: name plus its pricing/service metadata. */
+export type PickerOption = {
+  id: string
+  label: string
+  promptPerM?: number
+  completionPerM?: number
+  reasoning?: boolean
+  contextWindow?: number
+  free?: boolean
+}
+
 /** Per-session chat model picker (custom dropdown, mirrors session select). */
 export function ModelPicker({
   options,
@@ -172,7 +188,7 @@ export function ModelPicker({
   onChange,
   disabled,
 }: {
-  options: { id: string; label: string; free: boolean }[]
+  options: PickerOption[]
   value: string | null
   onChange: (id: string | null) => void
   disabled: boolean
@@ -183,6 +199,27 @@ export function ModelPicker({
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const active = options.find((o) => o.id === value) ?? null
+
+  function optionTitle(m: PickerOption): string {
+    const parts: string[] = []
+    if (
+      typeof m.promptPerM === 'number' &&
+      typeof m.completionPerM === 'number' &&
+      (m.promptPerM > 0 || m.completionPerM > 0 || m.free)
+    ) {
+      parts.push(
+        t('chat.modelPrice', {
+          input: formatPerMPrice(m.promptPerM),
+          output: formatPerMPrice(m.completionPerM),
+        }),
+      )
+    }
+    if (m.contextWindow && m.contextWindow > 0) {
+      parts.push(t('chat.modelCtx', { ctx: formatContextTokens(m.contextWindow) }))
+    }
+    parts.push(m.id)
+    return parts.join(' · ')
+  }
 
   // Portal the menu to <body> so no overflow-hidden ancestor can clip it.
   // Re-anchor on open/resize/scroll (capture) so it tracks the button.
@@ -276,12 +313,12 @@ export function ModelPicker({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('chat.modelPicker')}
-        title={active ? active.id : undefined}
+        title={active ? optionTitle(active) : undefined}
         className="flex max-w-56 items-center justify-between gap-2 rounded-md border border-line bg-bg px-2.5 py-1.5 text-xs transition-colors hover:border-line-strong disabled:opacity-50"
       >
         <span className="truncate text-fg">
           {active
-            ? `${active.label}${active.free ? ' · free' : ''}`
+            ? `${active.label}${active.free ? ` · ${t('chat.modelFree')}` : ''}`
             : t('chat.modelDefault')}
         </span>
         <span
@@ -329,19 +366,46 @@ export function ModelPicker({
               <button
                 key={m.id}
                 type="button"
-                role="menuitemradio"
-                aria-checked={m.id === value}
-                onClick={() => choose(m.id)}
-                title={m.id}
-                className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 ${
-                  m.id === value ? 'text-fg' : 'text-fg-soft'
-                }`}
-              >
-                <span className="truncate">
-                  {m.free ? `${m.label} · free` : m.label}
+              role="menuitemradio"
+              aria-checked={m.id === value}
+              onClick={() => choose(m.id)}
+              title={optionTitle(m)}
+              className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 ${
+                m.id === value ? 'text-fg' : 'text-fg-soft'
+              }`}
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-fg">{m.label}</span>
+                  {m.free && (
+                    <span className="shrink-0 rounded-full border border-line bg-surface-2 px-1.5 py-px text-[10px] font-medium text-fg-soft">
+                      {t('chat.modelFree')}
+                    </span>
+                  )}
+                  {m.reasoning && (
+                    <span className="shrink-0 rounded-full border border-accent/40 bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent-text">
+                      {t('chat.modelThinking')}
+                    </span>
+                  )}
                 </span>
-                {m.id === value && <CheckIcon />}
-              </button>
+                {typeof m.promptPerM === 'number' &&
+                  typeof m.completionPerM === 'number' &&
+                  (m.promptPerM > 0 || m.completionPerM > 0 || m.free) && (
+                    <span className="truncate font-mono text-[10px] text-fg-faint">
+                      {t('chat.modelPrice', {
+                        input: formatPerMPrice(m.promptPerM),
+                        output: formatPerMPrice(m.completionPerM),
+                      })}
+                      {m.contextWindow && m.contextWindow > 0
+                        ? ` · ${t('chat.modelCtx', {
+                            ctx: formatContextTokens(m.contextWindow),
+                          })}`
+                        : ''}
+                    </span>
+                  )}
+              </span>
+              {m.id === value && <CheckIcon />}
+            </button>
             ))}
           </div>,
           document.body,

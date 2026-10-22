@@ -12,6 +12,10 @@ export interface ModelPrice {
   promptPerM: number;
   completionPerM: number;
   free: boolean;
+  /** Model supports reasoning-capable generation (OpenRouter "reasoning" param). */
+  reasoning?: boolean;
+  /** Provider context window in tokens, when OpenRouter exposes it. */
+  contextWindow?: number;
 }
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -20,6 +24,8 @@ let cache: { at: number; prices: ModelPrice[] } | null = null;
 interface OpenRouterModel {
   id?: unknown;
   pricing?: { prompt?: unknown; completion?: unknown };
+  supported_parameters?: unknown;
+  context_length?: unknown;
 }
 
 function toNumber(value: unknown): number | null {
@@ -27,9 +33,23 @@ function toNumber(value: unknown): number | null {
   return typeof n === "number" && Number.isFinite(n) ? n : null;
 }
 
+function isReasoningModel(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.some((p) => typeof p === "string" && p === "reasoning")
+  );
+}
+
+type LiveEntry = {
+  promptPerM: number;
+  completionPerM: number;
+  reasoning?: boolean;
+  contextWindow?: number;
+};
+
 function mergeLive(
   curated: ChatModelOption[],
-  live: Map<string, { promptPerM: number; completionPerM: number }>,
+  live: Map<string, LiveEntry>,
 ): ModelPrice[] {
   return curated.map((m) => {
     const p = live.get(m.id);
@@ -39,13 +59,15 @@ function mergeLive(
       promptPerM: p?.promptPerM ?? m.promptPerM,
       completionPerM: p?.completionPerM ?? m.completionPerM,
       free: Boolean(m.free),
+      ...(m.reasoning || p?.reasoning ? { reasoning: true } : {}),
+      ...(p?.contextWindow ? { contextWindow: p.contextWindow } : {}),
     };
   });
 }
 
 async function fetchLivePrices(
   signal: AbortSignal,
-): Promise<Map<string, { promptPerM: number; completionPerM: number }>> {
+): Promise<Map<string, LiveEntry>> {
   const base = (OPENAI_BASE_URL || "https://openrouter.ai/api/v1").replace(
     /\/$/,
     "",
@@ -58,7 +80,7 @@ async function fetchLivePrices(
   });
   if (!res.ok) throw new Error(`OpenRouter /models: HTTP ${res.status}`);
   const body = (await res.json()) as { data?: unknown };
-  const out = new Map<string, { promptPerM: number; completionPerM: number }>();
+  const out = new Map<string, LiveEntry>();
   if (!Array.isArray(body.data)) return out;
   // OpenRouter quotes $/token; the catalog uses $/1M tokens. Round to 4
   // decimals so float noise (e.g. 0.09999999999999999) never reaches the UI.
@@ -70,9 +92,16 @@ async function fetchLivePrices(
       (item.pricing as { completion?: unknown })?.completion,
     );
     if (prompt === null || completion === null) continue;
+    const contextWindow = toNumber(item.context_length);
     out.set(item.id, {
       promptPerM: round4(prompt * 1_000_000),
       completionPerM: round4(completion * 1_000_000),
+      ...(isReasoningModel(item.supported_parameters)
+        ? { reasoning: true }
+        : {}),
+      ...(contextWindow && contextWindow > 0
+        ? { contextWindow: Math.round(contextWindow) }
+        : {}),
     });
   }
   return out;
